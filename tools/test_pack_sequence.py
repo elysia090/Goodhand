@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Contract tests for the offline occupancy packer. No project artwork required."""
 import importlib.util, pathlib, struct, unittest
+import contextlib, hashlib, io, json, tempfile
+from types import SimpleNamespace
 import numpy as np
+from unittest import mock
 spec=importlib.util.spec_from_file_location("pack",pathlib.Path(__file__).with_name("pack_sequence.py"))
 pack=importlib.util.module_from_spec(spec);spec.loader.exec_module(pack)
 
@@ -29,6 +32,43 @@ class ShapeContract(unittest.TestCase):
     def test_bad_clock(self):
         for fps in (0,1001):
             with self.assertRaises(ValueError):pack.encode(np.zeros((1,1,1)),fps)
+    def test_nonboolean_rejected(self):
+        with self.assertRaises(ValueError):pack.encode(np.ones((1,1,1),dtype=np.uint8))
+    def test_invalid_frame_validated_before_allocation(self):
+        with mock.patch.object(pack.np,"zeros",side_effect=AssertionError("allocation before validation")):
+            with self.assertRaises(ValueError):pack.decode(raw_frame([1,0,0]))
+    def test_runtime_asset_limit(self):
+        with mock.patch.object(pack,"MAX_ASSET_BYTES",25):
+            with self.assertRaises(ValueError):pack.encode(np.ones((1,1,5),dtype=bool))
+            with self.assertRaises(ValueError):pack.decode(bytes(26))
+    def test_candidate_gate_and_provenance(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source=pathlib.Path(folder)/"observations.npz"
+            np.savez_compressed(source,mask=np.ones((1,1,5),dtype=bool))
+            metadata={"mask_status":"observed_candidate",
+                      "output_sha256":hashlib.sha256(source.read_bytes()).hexdigest()}
+            source.with_suffix(".json").write_text(json.dumps(metadata))
+            destination=pathlib.Path(folder)/"shape.ghs"
+            args=SimpleNamespace(observations=source,destination=destination,candidate=False)
+            with mock.patch.object(pack.argparse.ArgumentParser,"parse_args",return_value=args):
+                with self.assertRaises(ValueError):pack.main()
+            self.assertFalse(destination.exists())
+            args.candidate=True
+            with mock.patch.object(pack.argparse.ArgumentParser,"parse_args",return_value=args):
+                with contextlib.redirect_stdout(io.StringIO()):pack.main()
+            report=json.loads(destination.with_suffix(".json").read_text())
+            self.assertEqual(report["mask_status"],"observed_candidate")
+            self.assertEqual(report["input_observations_sha256"],metadata["output_sha256"])
+    def test_changed_observations_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source=pathlib.Path(folder)/"observations.npz"
+            np.savez_compressed(source,mask=np.ones((1,1,5),dtype=bool))
+            source.with_suffix(".json").write_text(json.dumps({"output_sha256":"wrong"}))
+            destination=pathlib.Path(folder)/"shape.ghs"
+            args=SimpleNamespace(observations=source,destination=destination,candidate=True)
+            with mock.patch.object(pack.argparse.ArgumentParser,"parse_args",return_value=args):
+                with self.assertRaises(ValueError):pack.main()
+            self.assertFalse(destination.exists())
     def test_bad_shape_rank(self):
         with self.assertRaises(ValueError):pack.encode(np.zeros((2,2)))
     def test_short_header(self):
