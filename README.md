@@ -33,9 +33,10 @@ cargo build --release --lib
 # target が導入済みの場合:
 cargo build --release --lib --target wasm32-unknown-unknown
 
-# Python 3 / NumPy が必要:
+# Python 3 / NumPy / Pillow が必要（offline 制作用のみ）:
 python3 tools/test_pack_sequence.py
 python3 tools/test_extract_reference.py
+python3 tools/test_render_reference.py
 ```
 
 検証した toolchain は Rust 1.100.0。Cargo の Rust 1.70 指定は互換性の目標で、1.70 での実行試験は未実施。Wasm の library build 成功とブラウザー上の動作・性能は別の検証とする。
@@ -48,9 +49,10 @@ python3 tools/test_extract_reference.py
 python3 tools/extract_reference.py source.mp4 observations.npz \
   --expected-sha256 SHA256 --direction reverse
 python3 tools/pack_sequence.py observations.npz candidate.ghs --candidate
+python3 tools/render_reference.py observations.npz redraw --frames 0 144
 ```
 
-`--candidate` は未受入れの観測 mask を診断用に符号化する場合だけ使う。既定では受入れ済みでない mask を拒否する。抽出元、設定、位置付き曖昧点、形の比較を確認した上で受入れ記録を残す。無損失 round-trip は選んだ mask を保つ証明であって、形の正解や美的合格ではない。両ツールは既存の出力を上書きしない。
+`--candidate` は未受入れの観測 mask を診断用に符号化する場合だけ使う。既定では受入れ済みでない mask を拒否する。抽出元、設定、位置付き曖昧点、形の比較を確認した上で受入れ記録を残す。無損失 round-trip は選んだ mask を保つ証明であって、形の正解や美的合格ではない。抽出・符号化・再描画ツールは既存の出力を上書きしない。参照再描画は同じ格子へ保存観測grayを配置するだけで、新しい照明や面を加えない。
 
 ## Row-run 形式
 

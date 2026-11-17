@@ -62,6 +62,7 @@ tests/
 tools/
   extract_reference.py    映像から観測座標/階調/確信度を抽出
   pack_sequence.py        明示した契約で実行用データへ変換
+  render_reference.py     保存観測の階調を同じ点格子へ再描画
   measure.sh              同じ入力で計算/出力/命令を測定
 ```
 
