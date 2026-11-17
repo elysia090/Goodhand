@@ -65,3 +65,6 @@ python3 tools/render_reference.py observations.npz redraw --frames 0 144
 width/height は 1..255、fps は 1..1000、frame_count は 1..4096。Rust reader は asset を 64 MiB 以下に制限する。offset は先頭 0、非減少、payload 内、最終値が payload 長と一致すること。各 run は非空・格子内・順序通りで、間に少なくとも一点の非占有を置く。隣接 run は packer 側で結合する。frame の余剰 byte を許さない。
 
 検証は O(asset bytes)・確保なし、frame lookup は二つの offset、借用 row/run iteration は O(rows + runs)。N-byte mask 展開の API は N 個の出力位置を触り O(N + rows + runs) となる。この表現の費用であって、あらゆる表示の普遍的下限ではない。全周の bool 配列や毎 frame の全格子走査を、実行時の当然の仕事にはしない。
+
+
+再描画の出力先は未作成の専用ディレクトリを指定する。既存ディレクトリは空でも拒否し、途中失敗時の出力を別runへ混在させない。入力NPZは一度のsnapshotから検証・描画し、sidecarの時間・格子profileも照合する。

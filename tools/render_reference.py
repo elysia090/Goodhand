@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import io
 import json
 from pathlib import Path
 
@@ -16,21 +17,30 @@ CANVAS_SHAPE = (640, 1000)
 
 def load_observations(source):
     metadata = json.loads(source.with_suffix(".json").read_text())
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    source_bytes = source.read_bytes()
+    digest = hashlib.sha256(source_bytes).hexdigest()
     if metadata.get("output_sha256") != digest:
         raise ValueError("Observation bytes do not match their provenance report")
+    profile = {
+        "width": 1000, "height": 640, "fps": 24, "frames": FRAME_COUNT,
+        "period_seconds": 12,
+        "grid": {"columns": 200, "rows": 120, "pitch_px": 5,
+                 "dot_size_px": [2, 2], "dot_origin_px": [2, 42]},
+    }
+    if any(metadata.get(key) != value for key, value in profile.items()):
+        raise ValueError("Observation metadata does not match the fixed reference profile")
     if metadata.get("direction") != "reverse":
         raise ValueError("This reference profile requires declared reverse rotation")
     if metadata.get("mask_status") not in ("observed_candidate", "accepted"):
         raise ValueError("Missing observation/acceptance status")
-    with np.load(source, allow_pickle=False) as data:
+    with np.load(io.BytesIO(source_bytes), allow_pickle=False) as data:
         gray, mask = data["observed_gray"], data["mask"]
     expected_shape = (FRAME_COUNT, *GRID_SHAPE)
     if gray.dtype != np.uint8 or gray.shape != expected_shape:
         raise ValueError("Expected 288 frames of 120x200 uint8 observed gray")
     if mask.dtype != np.bool_ or mask.shape != expected_shape:
         raise ValueError("Expected an independent boolean occupancy array")
-    return gray, mask, metadata
+    return gray, mask, metadata, digest
 
 
 def compose_frame(gray, mask):
@@ -53,7 +63,7 @@ def save_png_exclusive(canvas, destination):
 
 
 def render(source, destination, frames):
-    gray, mask, metadata = load_observations(source)
+    gray, mask, metadata, digest = load_observations(source)
     if len(set(frames)) != len(frames):
         raise ValueError("Duplicate frame selection")
     if any(frame < 0 or frame >= FRAME_COUNT for frame in frames):
@@ -63,7 +73,7 @@ def render(source, destination, frames):
     if report_path.exists() or any(path.exists() for path in paths):
         raise FileExistsError("Refusing to replace existing reference outputs")
 
-    destination.mkdir(parents=True, exist_ok=True)
+    destination.mkdir(parents=True, exist_ok=False)
     files = []
     for frame, path in zip(frames, paths):
         save_png_exclusive(compose_frame(gray[frame], mask[frame]), path)
@@ -72,7 +82,7 @@ def render(source, destination, frames):
                       "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
     report = {
         "meaning": "Observed grayscale reference redraw, not new illumination or 3D/palette recovery",
-        "source_observation_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "source_observation_sha256": digest,
         "source_reference_sha256": metadata.get("source_sha256"),
         "mask_status": metadata["mask_status"],
         "sample_method": metadata.get("sample_method"),
@@ -103,3 +113,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
