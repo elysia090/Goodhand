@@ -56,16 +56,17 @@ src/
 assets/
   hand.*                  実行時に必要な軽量データのみ
 tests/
-  frame.rs                被覆/背景/境界値と不正入力
-  sequence.rs             時間・ループ・データ範囲
+  sequence.rs             被覆/背景/境界値、不正入力、時間・ループ・データ範囲
   tone.rs                 GHT8、shape 整合、offset、占有値数、不正入力
   surface.rs              pixel 配置、背景消去、境界値、buffer 保護
   terminal.rs             予定: 差分、リサイズ、消去、復元列
 tools/
   extract_reference.py    映像から観測座標/階調/確信度を抽出
-  pack_sequence.py        明示した契約で実行用データへ変換
+  gray_source.py          観測/作者の役割、固定profile、入力snapshotを共通検証
+  pack_sequence.py        明示した契約で形状を実行形式へ変換
+  pack_tone.py            形状と全セル照合した階調をGHT8へ変換。作画/採用はしない
   render_reference.py     保存観測の階調を同じ点格子へ再描画
-  measure.sh              同じ入力で計算/出力/命令を測定
+  measure.sh              予定: 同じ入力で計算/出力/命令を測定
 ```
 
 ```text
@@ -90,6 +91,7 @@ tools/
 - `Sequence::frame_index_at(elapsed)` は参照プロファイルの 12 秒周期の整数フレーム番号を返す。停止、再開、ループ境界でも時計と同期する。
 - 基礎階調と作者補正の合成・量子化は制作時に行い、基準と作者階調つきを別々に比較できる状態を保持する。固定ループの実行時に、同じ照明計算を繰り返すことを必須にしない。
 - `ToneSequence::from_bytes(bytes, shape)` は寸法・fps・frame 数・各 frame の占有数を検証する。shape 由来の同一性と採用状態は別の provenance で確認する。
+- 制作入力の観測値は `observed_gray`、作者値は `authored_gray` と命名し、読込み時の役割を明示する。実行形式への変換は曲線や補修を行わず、独立 mask と shape の全セル一致を確認する。入力と出力の hash、申告された作成方法、採用状態を payload とは別に記録する。mask の受入れを作者階調の採用と取り違えない。
 - `write_surface(shape_frame, gray, raster_spec, &mut pixels)` は pixel 面を生成し、形状を変更しない。pixel 配置と端末 cell 配置を別の契約にする。
 - 予定する端末 backend の `encode(previous, current, viewport, &mut bytes)` は I/O をせず、呼出し側のバッファを再利用する。
 - 小さな端末へ対応する時も縦横比を守る。欠けた図を表示するか、縮小するか、表示を休止するかは明示した表示ポリシーに従う。無断で毎フレーム別の配置へ変更しない。

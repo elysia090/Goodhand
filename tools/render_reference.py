@@ -3,7 +3,7 @@
 
 import argparse
 import hashlib
-import io
+import importlib.util
 import json
 from pathlib import Path
 
@@ -14,32 +14,18 @@ FRAME_COUNT = 288
 GRID_SHAPE = (120, 200)
 CANVAS_SHAPE = (640, 1000)
 
+# Keep file-based imports used by external QA working without changing sys.path.
+_SOURCE_SPEC = importlib.util.spec_from_file_location(
+    "gray_source", Path(__file__).with_name("gray_source.py")
+)
+_SOURCE_IO = importlib.util.module_from_spec(_SOURCE_SPEC)
+_SOURCE_SPEC.loader.exec_module(_SOURCE_IO)
+
 
 def load_observations(source):
-    metadata = json.loads(source.with_suffix(".json").read_text())
-    source_bytes = source.read_bytes()
-    digest = hashlib.sha256(source_bytes).hexdigest()
-    if metadata.get("output_sha256") != digest:
-        raise ValueError("Observation bytes do not match their provenance report")
-    profile = {
-        "width": 1000, "height": 640, "fps": 24, "frames": FRAME_COUNT,
-        "period_seconds": 12,
-        "grid": {"columns": 200, "rows": 120, "pitch_px": 5,
-                 "dot_size_px": [2, 2], "dot_origin_px": [2, 42]},
-    }
-    if any(metadata.get(key) != value for key, value in profile.items()):
-        raise ValueError("Observation metadata does not match the fixed reference profile")
-    if metadata.get("direction") != "reverse":
-        raise ValueError("This reference profile requires declared reverse rotation")
-    if metadata.get("mask_status") not in ("observed_candidate", "accepted"):
-        raise ValueError("Missing observation/acceptance status")
-    with np.load(io.BytesIO(source_bytes), allow_pickle=False) as data:
-        gray, mask = data["observed_gray"], data["mask"]
-    expected_shape = (FRAME_COUNT, *GRID_SHAPE)
-    if gray.dtype != np.uint8 or gray.shape != expected_shape:
-        raise ValueError("Expected 288 frames of 120x200 uint8 observed gray")
-    if mask.dtype != np.bool_ or mask.shape != expected_shape:
-        raise ValueError("Expected an independent boolean occupancy array")
+    gray, mask, metadata, digest, _ = _SOURCE_IO.load_gray_source(
+        source, kind="observed", profile="reference-v1"
+    )
     return gray, mask, metadata, digest
 
 

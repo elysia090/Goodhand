@@ -35,6 +35,29 @@
 - 固定位置の輝度変調を基準とし、必要がある時だけ固定 rank の入れ子と比較する。毎フレーム独立の乱数で点を選び直さない。
 - 改良段階では、物理照明への忠実さだけでなく、大きな明暗面と各角度の可読性で評価する。
 
+## 制作値を実行形式へ渡す
+
+制作側で合成・量子化を終えた値だけを、`pack_tone.py` で occupied順のGHT8へ変換する。この変換で曲線、gamma、補間、mask補修、採用判定を追加しない。
+
+入力はNPZと同名のJSON sidecar。`--profile reference-v1` は表現の契約で定めた1000×640px、200×120点、逆回転12秒/24fps/288frame、pitch5px/2×2px/origin(2,42)を照合する。NPZの役割は必須の `--kind` で選ぶ。
+
+- `observed`: `observed_gray:uint8[288,120,200]` と `mask:bool` 同shape。
+- `authored`: `authored_gray:uint8[288,120,200]` と `mask:bool` 同shape。
+- 任意の `threshold_ambiguity:bool` 同shapeは検証するが、点の補修には使わない。役割が逆のkey、曖昧な `gray`、追加の診断配列は受け取らない。floatのclampやuint8/boolへの暗黙変換もしない。
+
+コンテナはNumPyの通常のstored/deflate形式に限定する。コメントなし・単一disk・2〜3member・ZIP32中央indexを要求し、indexは4KiB以下とする。これは汎用ZIP取込みではなく、固定profile用の資源制約。各配列のlocal headerにあるZIP64 extraは許容する。byte/index/配列の上限は検証するが、プロセス全体の厳密なRSSや実行時間の保証ではない。
+
+sidecarにはNPZの `output_sha256`、寸法・時間・格子のprofile、`direction:"reverse"`、`mask_status:"observed_candidate"` または `"accepted"` が必要。作者入力ではさらに `source_kind:"authored"`、`generation.method`、`generation.parent_observation_sha256` を宣言する。作者値を `observed_gray` に上書きしない。
+
+```sh
+python3 tools/pack_tone.py authored.npz shape.ghs authored-export \
+  --kind authored --profile reference-v1
+```
+
+NPZ、sidecar、shapeは上限付きの一回snapshotを使う。NPZは許可memberのheader/dtype/shape/展開量を配列確保前に確認し、pickle・重複member・余剰データを拒否する。独立maskはGHSHと全セル一致を求め、C-orderの占有位置を既存row/run順に対応付ける。背景値を占有値に混ぜず、黒0も有効な占有値として保存する。
+
+未作成の専用出力dirへ `tone.ght` と `tone.json` を排他的に保存する。既存dirは空でも再利用せず、失敗時の部分出力を別runへ混ぜない。由来記録にはNPZ/sidecar/shape/出力のSHAと占有数を残す。役割名・親入力SHA・制作方法は申告として記録し、親bytesが与えられない時は検証済みと呼ばない。出力の `artifact_adoption` は常に `not_assessed` とし、作品の採用記録は出力SHAに対して別に管理する。
+
 ## 一次資料から使う原則と境界
 
 - [Weighted Voronoi Stippling](https://www.cs.ubc.ca/labs/imager/tr/2002/secord2002b/secord.2002b.pdf) は目標トーンを密度で近似する。ただし自由に移動する黒点/白紙の方式であり、固定格子/黒背景の明点へ Lloyd 緩和や密度の符号をそのまま移さない。

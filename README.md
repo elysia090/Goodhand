@@ -4,7 +4,7 @@
 
 ## 現在の実装
 
-中立な 2D 占有と別の観測 gray8 を読む Rust reader、固定 pixel 面への配置、offline 抽出・符号化・再描画ツール。端末アプリ、完成した作者階調、全周の美的評価、端末性能の検証はまだ完了していない。すべての[品質ゲート](DESIGN.md#品質保証のゲート)を通るまで 0.0.1 の完成や release 公開とは扱わない。
+中立な 2D 占有と別の gray8 を読む Rust reader、固定 pixel 面への配置、offline 抽出・符号化・再描画ツール。観測値と作者値は制作入力の役割を分けて扱う。端末アプリ、完成した作者階調、全周の美的評価、端末性能の検証はまだ完了していない。すべての[品質ゲート](DESIGN.md#品質保証のゲート)を通るまで 0.0.1 の完成や release 公開とは扱わない。
 
 - runtime の追加依存なし。動画デコーダと Python は offline 制作用。
 - Rust reader は入力を借用し、全 frame の構造検証後にのみ frame を公開する。parse/row iteration は heap 確保を行わない。
@@ -39,6 +39,7 @@ cargo build --release --lib --target wasm32-unknown-unknown
 python3 tools/test_pack_sequence.py
 python3 tools/test_extract_reference.py
 python3 tools/test_render_reference.py
+python3 tools/test_pack_tone.py
 ```
 
 ローカル検証の toolchain は Rust 1.100.0。CI は Python 合成テスト、Rust 1.100 の品質・library build、Rust 1.70 の互換目標を独立して検査する。各 commit の結果は Actions で確認する。Wasm の library build 成功とブラウザー上の動作・性能は別の検証とする。
@@ -52,11 +53,17 @@ python3 tools/extract_reference.py source.mp4 observations.npz \
   --expected-sha256 SHA256 --direction reverse
 python3 tools/pack_sequence.py observations.npz candidate.ghs --candidate
 python3 tools/render_reference.py observations.npz redraw --frames 0 144
+python3 tools/pack_tone.py observations.npz candidate.ghs observed-export \
+  --kind observed --profile reference-v1
 ```
 
 `--candidate` は未受入れの観測 mask を診断用に符号化する場合だけ使う。既定では受入れ済みでない mask を拒否する。抽出元、設定、位置付き曖昧点、形の比較を確認した上で受入れ記録を残す。無損失 round-trip は選んだ mask を保つ証明であって、形の正解や美的合格ではない。抽出・符号化・再描画ツールは既存の出力を上書きしない。参照再描画は同じ格子へ保存観測grayを配置するだけで、新しい照明や面を加えない。
 
 再描画の出力先は未作成の専用ディレクトリを指定する。既存ディレクトリは空でも拒否し、途中失敗時の出力を別runへ混在させない。入力NPZは一度のsnapshotから検証・描画し、sidecarの時間・格子profileも照合する。
+
+`pack_tone.py` は曲線適用や採用判定を行わず、選択した階調を `tone.ght` と別の由来記録 `tone.json` へ書き出す。`--kind observed` は `observed_gray`、`--kind authored` は制作側で合成・量子化済みの `authored_gray` を要求し、曖昧な `gray` や両役割の混在を拒否する。入力形式の詳細は[階調データの受渡し](docs/tone.md#制作値を実行形式へ渡す)を参照。
+
+両役割とも独立した bool mask と shape を全セルで照合する。黒0も占有値として残す。入力NPZ・sidecar・shapeの同じsnapshotを検証・hash・符号化に使い、出力先は未作成の専用ディレクトリだけとする。maskの受入れ状態を階調の採用へ昇格させず、出力の `artifact_adoption` は常に `not_assessed`。形式への符号化成功と作品の採用は別である。
 
 ## Row-run 形式
 

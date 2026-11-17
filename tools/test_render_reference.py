@@ -131,20 +131,21 @@ class ReferenceRedraw(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             source, gray, mask = observation_fixture(folder)
             source_bytes = source.read_bytes()
-            original_read = Path.read_bytes
+            original_read = renderer._SOURCE_IO.read_bounded_snapshot
             calls = []
 
-            def read_once(path):
+            def read_once(path, limit):
                 if path == source:
                     calls.append(path)
                     if len(calls) > 1:
                         raise AssertionError("Source must only be read once")
+                    snapshot = original_read(path, limit)
                     # Simulate a concurrent replacement after the input snapshot.
                     source.write_bytes(b"different file after snapshot")
-                    return source_bytes
-                return original_read(path)
+                    return snapshot
+                return original_read(path, limit)
 
-            with mock.patch.object(Path, "read_bytes", read_once):
+            with mock.patch.object(renderer._SOURCE_IO, "read_bounded_snapshot", read_once):
                 out = Path(folder) / "rendered"
                 report = renderer.render(source, out, [0])
             self.assertEqual(len(calls), 1)
