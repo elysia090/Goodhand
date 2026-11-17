@@ -89,6 +89,46 @@ fn separated_runs_and_later_rows_preserve_gray_order() {
 }
 
 #[test]
+fn two_by_two_specialization_preserves_geometry_order_tail_and_clearing() {
+    let bytes = asset(5, 2, &[&[2, 0, 1, 3, 2, 2, 1, 1, 4, 1], &[0, 0]]);
+    let shape = Sequence::from_bytes(&bytes).unwrap();
+    let spec = RasterSpec {
+        width: 15,
+        height: 8,
+        origin: [1, 2],
+        pitch: [3, 4],
+        dot_size: [2, 2],
+    };
+    let mut output = [239; 124];
+    write_surface(
+        shape.frame(0).unwrap(),
+        &[0, 17, 255, 63, 129],
+        spec,
+        &mut output,
+    )
+    .unwrap();
+    let mut expected = [0; 124];
+    for (x, y, gray) in [
+        (1, 2, 0),
+        (10, 2, 17),
+        (13, 2, 255),
+        (4, 6, 63),
+        (13, 6, 129),
+    ] {
+        for dy in 0..2 {
+            expected[(y + dy) * 15 + x..(y + dy) * 15 + x + 2].fill(gray);
+        }
+    }
+    expected[120..].fill(239);
+    assert_eq!(output, expected);
+    assert_eq!(output[119], 129); // Last dot touches the bottom-right pixel.
+
+    write_surface(shape.frame(1).unwrap(), &[], spec, &mut output).unwrap();
+    assert_eq!(&output[..120], &[0; 120]);
+    assert_eq!(&output[120..], &[239; 4]);
+}
+
+#[test]
 fn next_frame_clears_old_dots_and_nonoccupied_background() {
     let bytes = asset(2, 2, &[&[1, 1, 1, 0], &[0, 0]]);
     let shape = Sequence::from_bytes(&bytes).unwrap();

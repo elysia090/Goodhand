@@ -90,6 +90,26 @@ pub fn write_surface(
     }
     let destination = &mut destination[..required];
     destination.fill(0);
+    if spec.dot_size == [2, 2] {
+        // Reference-sized footprints use two fixed-width copies rather than
+        // a variable-length fill for each pixel row. Validation is unchanged.
+        let mut tone = 0;
+        for row in shape.rows() {
+            let y = spec.origin[1] + usize::from(row.y()) * spec.pitch[1];
+            for run in row.runs() {
+                for point_x in run.start()..run.end() {
+                    let gray = occupied_gray[tone];
+                    tone += 1;
+                    let x = spec.origin[0] + usize::from(point_x) * spec.pitch[0];
+                    let first = y * spec.width + x;
+                    let second = first + spec.width;
+                    destination[first..first + 2].copy_from_slice(&[gray; 2]);
+                    destination[second..second + 2].copy_from_slice(&[gray; 2]);
+                }
+            }
+        }
+        return Ok(());
+    }
     let mut tone = 0;
     for row in shape.rows() {
         let y = spec.origin[1] + usize::from(row.y()) * spec.pitch[1];
