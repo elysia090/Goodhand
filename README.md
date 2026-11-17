@@ -4,7 +4,7 @@
 
 ## 現在の実装
 
-中立な 2D 占有データの Rust reader と offline 抽出・符号化ツール。端末アプリ、完成した作者階調、全周の美的評価、端末性能の検証はまだ完了していない。すべての[品質ゲート](DESIGN.md#品質保証のゲート)を通るまで 0.0.1 の完成や release 公開とは扱わない。
+中立な 2D 占有と別の観測 gray8 を読む Rust reader、固定 pixel 面への配置、offline 抽出・符号化・再描画ツール。端末アプリ、完成した作者階調、全周の美的評価、端末性能の検証はまだ完了していない。すべての[品質ゲート](DESIGN.md#品質保証のゲート)を通るまで 0.0.1 の完成や release 公開とは扱わない。
 
 - runtime の追加依存なし。動画デコーダと Python は offline 制作用。
 - Rust reader は入力を借用し、全 frame の構造検証後にのみ frame を公開する。parse/row iteration は heap 確保を行わない。
@@ -17,7 +17,9 @@
 - [DESIGN.md](DESIGN.md): 完成像、契約、依存方向、品質ゲート、必要な仕事。
 - [docs/tone.md](docs/tone.md): 一次資料に基づく階調・点・時間一貫性の設計と検証仮説。
 - `src/frame.rs`: 占有、row/run の借用、呼出し側バッファへの 0/1 展開。
-- `src/sequence.rs`: 入力検証と時刻からの frame 選択。
+- `src/sequence.rs`: 形状入力検証と時刻からの frame 選択。
+- `src/tone.rs`: shape とは別の occupied 順 gray8 の借用と検証。
+- `src/surface.rs`: 論理点と gray8 を pixel 面へ配置。端末セルや I/O は扱わない。
 - `tools/`: 参照映像の観測と制作時の符号化。実行時には不要。
 
 `Sequence::from_bytes(&bytes)` は全 offset/row/run を検証する。`frame(index)` は範囲を検査し、`frame_at(Duration)` は時計から直接選択する。`ShapeFrame::rows()` は全格子へ展開せずに区間を参照する。`write_mask(&mut output)` は先頭 width × height byte だけに 0/1 を書き、不足したバッファは変更しない。
@@ -39,7 +41,7 @@ python3 tools/test_extract_reference.py
 python3 tools/test_render_reference.py
 ```
 
-検証した toolchain は Rust 1.100.0。Cargo の Rust 1.70 指定は互換性の目標で、1.70 での実行試験は未実施。Wasm の library build 成功とブラウザー上の動作・性能は別の検証とする。
+ローカル検証の toolchain は Rust 1.100.0。CI は Python 合成テスト、Rust 1.100 の品質・library build、Rust 1.70 の互換目標を独立して検査する。各 commit の結果は Actions で確認する。Wasm の library build 成功とブラウザー上の動作・性能は別の検証とする。
 
 ## Offline 制作
 
@@ -54,6 +56,8 @@ python3 tools/render_reference.py observations.npz redraw --frames 0 144
 
 `--candidate` は未受入れの観測 mask を診断用に符号化する場合だけ使う。既定では受入れ済みでない mask を拒否する。抽出元、設定、位置付き曖昧点、形の比較を確認した上で受入れ記録を残す。無損失 round-trip は選んだ mask を保つ証明であって、形の正解や美的合格ではない。抽出・符号化・再描画ツールは既存の出力を上書きしない。参照再描画は同じ格子へ保存観測grayを配置するだけで、新しい照明や面を加えない。
 
+再描画の出力先は未作成の専用ディレクトリを指定する。既存ディレクトリは空でも拒否し、途中失敗時の出力を別runへ混在させない。入力NPZは一度のsnapshotから検証・描画し、sidecarの時間・格子profileも照合する。
+
 ## Row-run 形式
 
 候補形式 `GHSH` version 1。見た目を形式へ合わせるための制約ではない。
@@ -67,4 +71,20 @@ width/height は 1..255、fps は 1..1000、frame_count は 1..4096。Rust reade
 検証は O(asset bytes)・確保なし、frame lookup は二つの offset、借用 row/run iteration は O(rows + runs)。N-byte mask 展開の API は N 個の出力位置を触り O(N + rows + runs) となる。この表現の費用であって、あらゆる表示の普遍的下限ではない。全周の bool 配列や毎 frame の全格子走査を、実行時の当然の仕事にはしない。
 
 
-再描画の出力先は未作成の専用ディレクトリを指定する。既存ディレクトリは空でも拒否し、途中失敗時の出力を別runへ混在させない。入力NPZは一度のsnapshotから検証・描画し、sidecarの時間・格子profileも照合する。
+## Occupied gray8 と pixel 面
+
+`GHT8` version 1 は `GHSH` と同じ 16-byte header レイアウト（magic は `GHT8`、version は 1）と offset table に、row/run 順の occupied gray8 を続ける。shape と寸法・fps・frame 数を照合し、各 frame の値数が run 長合計と一致することを全体検証する。asset は 64 MiB 以下。値 0 も有効な占有色であり、背景用の特別値ではない。shape hash と採用状態は offline provenance で対応付け、寸法・点数の一致だけで同一由来と断定しない。
+
+```rust
+let shape = goodhand::Sequence::from_bytes(&shape_bytes)?;
+let tones = goodhand::ToneSequence::from_bytes(&tone_bytes, shape)?;
+let spec = goodhand::RasterSpec::REFERENCE;
+let mut pixels = vec![0u8; spec.required_len()?];
+let f = shape.frame_index_at(elapsed); // 時計は一つだけ
+// frame の範囲は同じ検証済み Sequence が決める。
+goodhand::write_surface(shape.frame(f).unwrap(), tones.frame(f).unwrap(), spec, &mut pixels)?;
+```
+
+`REFERENCE` は 1000×640 **pixel**、原点(2,42)、pitch5、2×2点。`write_surface` は入力全体を確認してから背景を消去・配置し、失敗時には buffer を変更せず、成功時にも余剰 tail は保持する。呼出し側の確保を再利用し、関数内の heap 確保はない。P pixel の全面消去と occupied 点の footprint 書込みがこの実装の仕事であり、最小の実行方式や最速を保証しない。
+
+これは端末 backend の前段で、文字セル、画像 protocol、配置、終了時復元はまだ実装していない。ANSI や Braille を元画像と同一と扱わず、使用端末での能力・構図・帯域を別に検証する。
