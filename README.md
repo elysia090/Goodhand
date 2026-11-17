@@ -46,6 +46,8 @@ python3 tools/test_pack_tone.py
 
 ## Offline 制作
 
+動画抽出には PATH 上の `ffmpeg` と `ffprobe` が必要。これらは offline 制作用で、Rust の実行時依存には含めない。
+
 `extract_reference.py` は明示選択した source hash、最初の video stream、288 個の PTS、24 fps を確認する。占有の候補、観測された輝度、位置付きの閾値曖昧点を別に保存する。観測輝度を元パレットや法線と呼ばない。
 
 ```sh

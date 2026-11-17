@@ -54,7 +54,7 @@ src/
   terminal.rs             予定: 表示面→更新列。I/O はしない
   main.rs                 予定: 引数、時計、端末入力、write、終了処理
 assets/
-  hand.*                  実行時に必要な軽量データのみ
+  hand.*                  予定・非同梱: 実行時に必要な軽量データのみ
 tests/
   sequence.rs             被覆/背景/境界値、不正入力、時間・ループ・データ範囲
   tone.rs                 GHT8、shape 整合、offset、占有値数、不正入力
@@ -87,12 +87,12 @@ tools/
 
 ### データと API の意味
 
-- `ShapeFrame` は格子占有、`ToneSequence` の frame が返す gray8 slice はその占有順の階調。黒い面と背景を区別する。実行時に両者を同じ配列へ圧縮しても意味は失わない。
+- `ShapeFrame` は格子占有、`ToneSequence` の frame が返す gray8 slice はその占有順の階調。黒い面と背景を区別する。占有と階調を単一の格納形式へまとめる場合も、この二つの意味を区別できる encoding を使う。
 - `Sequence::frame_index_at(elapsed)` は参照プロファイルの 12 秒周期の整数フレーム番号を返す。停止、再開、ループ境界でも時計と同期する。
 - 基礎階調と作者補正の合成・量子化は制作時に行い、基準と作者階調つきを別々に比較できる状態を保持する。固定ループの実行時に、同じ照明計算を繰り返すことを必須にしない。
 - `ToneSequence::from_bytes(bytes, shape)` は寸法・fps・frame 数・各 frame の占有数を検証する。shape 由来の同一性と採用状態は別の provenance で確認する。
 - 制作入力の観測値は `observed_gray`、作者値は `authored_gray` と命名し、読込み時の役割を明示する。実行形式への変換は曲線や補修を行わず、独立 mask と shape の全セル一致を確認する。入力と出力の hash、申告された作成方法、採用状態を payload とは別に記録する。mask の受入れを作者階調の採用と取り違えない。
-- `write_surface(shape_frame, gray, raster_spec, &mut pixels)` は pixel 面を生成し、形状を変更しない。pixel 配置と端末 cell 配置を別の契約にする。
+- `write_surface(shape_frame, gray, raster_spec, &mut pixels)` は pixel 面を生成し、形状を変更しない。pixel 配置と端末 cell 配置を別の契約にする。gray8 表示面では占有黒0と背景0は同じ値になるため、この面から占有を復元しない。占有が必要な後段は `ShapeFrame` または等価の独立情報を使う。
 - 予定する端末 backend の `encode(previous, current, viewport, &mut bytes)` は I/O をせず、呼出し側のバッファを再利用する。
 - 小さな端末へ対応する時も縦横比を守る。欠けた図を表示するか、縮小するか、表示を休止するかは明示した表示ポリシーに従う。無断で毎フレーム別の配置へ変更しない。
 - リサイズや表示方式の変更は差分状態を無効化する。旧描画の消去、全体の再描画、失敗後の復元列を定義し、実際の I/O と終了処理はバイナリが引き受ける。
