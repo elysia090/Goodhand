@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import io
 import json
 import pathlib
 import struct
@@ -117,7 +118,8 @@ def main():
     if args.destination.exists() or report_path.exists():
         raise FileExistsError("Refusing to overwrite existing shape or report")
 
-    input_hash = hashlib.sha256(args.observations.read_bytes()).hexdigest()
+    input_bytes = args.observations.read_bytes()
+    input_hash = hashlib.sha256(input_bytes).hexdigest()
     input_report_path = args.observations.with_suffix(".json")
     input_report = json.loads(input_report_path.read_text()) if input_report_path.exists() else {}
     if input_report.get("output_sha256") not in (None, input_hash):
@@ -125,9 +127,9 @@ def main():
     accepted = input_report.get("mask_status") == "accepted"
     if not accepted and not args.candidate:
         raise ValueError("Mask is not accepted; use --candidate only for diagnostics")
-    observations = np.load(args.observations)
-    source = observations["mask"]
-    ambiguity = observations["threshold_ambiguity"] if "threshold_ambiguity" in observations.files else None
+    with np.load(io.BytesIO(input_bytes), allow_pickle=False) as observations:
+        source = observations["mask"]
+        ambiguity = observations["threshold_ambiguity"] if "threshold_ambiguity" in observations.files else None
     if ambiguity is not None and (ambiguity.dtype != np.bool_ or ambiguity.shape != source.shape):
         raise ValueError("Invalid per-cell threshold ambiguity map")
     blob = encode(source)
@@ -162,3 +164,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
