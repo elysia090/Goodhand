@@ -466,7 +466,8 @@ impl Arm {
             ),
             // Two unequal, shallow pads overlap in depth at different
             // heights instead of merging into one round cross-section.
-            // The inner fold continues into the thumb-side joint.
+            // Recess the inner support into the thumb-side joint so it
+            // does not form a third projecting pad.
             lower_fold: Ellipsoid::new(
                 Vec3::new(0.489, -0.089, -0.059),
                 Vec3::new(0.125, 0.063, 0.117),
@@ -476,7 +477,7 @@ impl Arm {
                 Vec3::new(0.115, 0.058, 0.108),
             ),
             inner_fold: Ellipsoid::new(
-                Vec3::new(0.325, -0.080, 0.083),
+                Vec3::new(0.325, -0.080, 0.043),
                 Vec3::new(0.111, 0.099, 0.098),
             ),
             raised_finger: Taper::new(
@@ -899,6 +900,16 @@ mod tests {
                 assert!(arm.distance(point, arm.bounds()) < 0.0);
             }
         }
+    }
+
+    #[test]
+    fn inner_fold_support_recedes_behind_the_visible_pads() {
+        let arm = Arm::new();
+        let bounds = arm.bounds();
+        // The support still has volume under the thumb-side joint, but
+        // does not make a third cap in front of the two folded pads.
+        assert!(arm.distance(Vec3::new(0.325, -0.110, 0.116), bounds) < -HIT);
+        assert!(arm.distance(Vec3::new(0.325, -0.110, 0.163), bounds) > HIT);
     }
 
     #[test]

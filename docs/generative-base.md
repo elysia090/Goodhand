@@ -13,9 +13,9 @@ movie, recovered frames, a pose guide, a mesh or per-angle table.
   moving the wrist anchor or changing the vertical radius.
   The cut is a plane, not a spherical end. Two visible folded pads sit
   at different heights and use shallow cross-sections, so their overlap
-  can read on edge without a painted crease. The inner fold still
-  connects them to the palm. The open-finger gap is real empty space,
-  not black paint.
+  can read on edge without a painted crease. A recessed inner fold
+  connects them to the palm without projecting into a third pad.
+  The open-finger gap is real empty space, not black paint.
 - **Base tone:** the same fixed keys light the changing physical
   normals. The cut face's matte material and the gentle floor in
   shadow keep the light from becoming a uniform rim. The front palm bank
