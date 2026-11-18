@@ -1,7 +1,7 @@
-# P3-2 working artwork
+# Source study
 
-This selected, project-authored pixel snapshot is the starting point for
-the next visual review, not a finished artwork release. It contains 288
+This archived, project-authored snapshot preserves the earlier gray and
+the original independent occupancy. It is not a runtime input or release. It contains 288
 reverse-rotation poses, an independent occupancy mask, and authored 8-bit
 gray. It does not contain the source capture, source photograph, mesh,
 third-party reference images, or in-progress retouches.
@@ -10,7 +10,7 @@ Generate the 22-second standalone proof from the repository root with Python,
 NumPy, Pillow, FFmpeg, and FFprobe (including FFmpeg's libx264 encoder):
 
 ```sh
-python tools/render_cycle.py artwork/p3-2/pixels.npz goodhand-p3-2.mp4 \
+python tools/render_cycle.py reference/source-study/pixels.npz goodhand-source-study.mp4 \
   --kind authored --seconds 22
 ```
 

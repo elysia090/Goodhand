@@ -1,16 +1,19 @@
-//! Goodhand's neutral 2D shapes, separate reference gray, and pixel surfaces.
+//! Goodhand's continuous arm model and separate readers for archived 2D art.
 //!
 //! Occupancy says where the hand exists, not how light or dark its surface is.
-//! This core neither reconstructs depth/normals nor decodes video, invents light,
-//! places terminal cells, or performs I/O. Runtime assets are prepared offline.
+//! The continuous model samples geometry and broad base light in code. Archived
+//! shape and gray readers preserve their fixed-grid data without resampling.
+//! The library performs no I/O or terminal placement.
 
 #![forbid(unsafe_code)]
 
+pub mod arm_model;
 pub mod frame;
 pub mod sequence;
 pub mod surface;
 pub mod tone;
 
+pub use arm_model::{render_arm, ArmAttrs, ArmRenderError, ArmSampler, ArmView};
 pub use frame::{FrameError, MaskBufferTooShort, Row, Rows, Run, Runs, ShapeFrame};
 pub use sequence::{DecodeError, Sequence};
 pub use surface::{write_surface, RasterSpec, SurfaceError};

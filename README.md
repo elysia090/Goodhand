@@ -3,9 +3,10 @@
 A small, dependency-free Rust library for a fixed-grid rotating hand artwork.
 Shape, grayscale tone, timing, and pixel placement have separate contracts.
 Offline Python tools prepare and inspect data; they are not runtime dependencies.
-The [V3 visual baseline](artwork/v3/) can be rendered as a 30-second review
-from its fixed-grid snapshot without a guide. The earlier [P3-2 artwork](artwork/p3-2/)
-remains archived with its 22-second preview. Source imagery is not included.
+The [visual baseline](reference/visual-baseline/) is the approved appearance
+for comparison. The [source study](reference/source-study/) preserves the
+earlier authored gray and the independent occupancy shared by both snapshots.
+They are offline references, not runtime inputs. Source imagery is not included.
 
 This is a library, not a terminal application. Terminal output, real-device
 performance, and final artistic acceptance remain unverified. See
@@ -32,6 +33,14 @@ row iteration do not allocate. `write_mask` writes only the required prefix and
 leaves a short buffer unchanged. `write_surface` validates before writing,
 reuses the caller's allocation, clears the required canvas, and preserves any
 unused tail. An occupied black value is not background occupancy.
+
+## Generative model
+
+`src/arm_model.rs` samples the same continuous arm shape at a chosen
+yaw and physical sample aspect. It writes separate occupancy and gray
+to caller-owned buffers, with no frame data or video input. The new
+model is an approximation of the visual baseline, not a reconstruction
+of its underlying geometry. See the [base and attr design](docs/generative-base.md).
 
 ## Checks
 
@@ -79,7 +88,7 @@ interpolation, or adoption decisions occur. Preview PNGs retain the historical
 `reference-fNNN.png` filenames and `reference-redraw.json` report name for either
 role; the report identifies the role explicitly.
 
-If you already have a lossless fixed-grid review such as V3, use
+If you already have a lossless fixed-grid review, use
 [review recovery](docs/review-recovery.md) to recover its gray with the
 original independent occupancy. No pose guide or authoring recipe is used.
 
