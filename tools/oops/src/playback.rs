@@ -6,7 +6,7 @@ pub const RUN_TIME: Duration = Duration::from_secs(30);
 pub const TICKS: u64 = RUN_TIME.as_secs() * FPS;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
-const BACKPRESSURE_POLL: Duration = Duration::from_millis(4);
+pub const BACKPRESSURE_POLL: Duration = Duration::from_millis(4);
 
 pub fn tick(elapsed: Duration) -> Option<u64> {
     (elapsed < RUN_TIME).then(|| (elapsed.as_nanos() as u64) * FPS / NS_PER_SEC)
@@ -21,9 +21,23 @@ pub fn start_of_tick(tick: u64) -> Duration {
 /// budget before every write or retry. Interrupted writes are replayed only
 /// when the OS reports that zero bytes were written.
 pub fn write_bounded(
+    sink: impl Write,
+    remaining: &[u8],
+    check: impl FnMut() -> io::Result<()>,
+) -> io::Result<()> {
+    write_bounded_with_wait(sink, remaining, check, || {
+        std::thread::sleep(BACKPRESSURE_POLL);
+        Ok(())
+    })
+}
+
+/// The output wait must be bounded so the next iteration can recheck
+/// cancellation, viewport and wall-clock budget before writing again.
+pub fn write_bounded_with_wait(
     mut sink: impl Write,
     mut remaining: &[u8],
     mut check: impl FnMut() -> io::Result<()>,
+    mut wait: impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
     while !remaining.is_empty() {
         check()?;
@@ -32,7 +46,7 @@ pub fn write_bounded(
             Ok(count) => remaining = &remaining[count..],
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                std::thread::sleep(BACKPRESSURE_POLL);
+                wait()?;
             }
             Err(error) => return Err(error),
         }
@@ -98,6 +112,37 @@ mod tests {
         .unwrap();
         assert_eq!(out.written, b"abcdefg");
         assert_eq!(checks, 5);
+    }
+
+    #[test]
+    fn waits_for_readiness_only_when_output_would_block() {
+        let mut out = Script {
+            steps: [
+                Ok(1),
+                Err(io::ErrorKind::Interrupted.into()),
+                Err(io::ErrorKind::WouldBlock.into()),
+                Ok(2),
+            ]
+            .into(),
+            ..Script::default()
+        };
+        let mut waits = 0;
+        let mut checks = 0;
+        write_bounded_with_wait(
+            &mut out,
+            b"abc",
+            || {
+                checks += 1;
+                Ok(())
+            },
+            || {
+                waits += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(out.written, b"abc");
+        assert_eq!((waits, checks), (1, 4));
     }
 
     #[test]

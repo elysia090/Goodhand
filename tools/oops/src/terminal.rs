@@ -6,7 +6,7 @@ use crate::playback::{self, RUN_TIME};
 use crate::terminal_keys::Termios;
 use std::cell::Cell;
 use std::env;
-use std::ffi::{c_int, c_ulong, c_void};
+use std::ffi::{c_int, c_short, c_ulong, c_void};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
 use std::os::fd::AsRawFd;
@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 const TIOCGWINSZ: c_ulong = 0x5413;
 const O_NOCTTY: c_int = 0o400;
 const O_NONBLOCK: c_int = 0o4000;
+const POLLOUT: c_short = 0x004;
 const SIGHUP: c_int = 1;
 const SIGINT: c_int = 2;
 const SIGQUIT: c_int = 3;
@@ -41,7 +42,15 @@ struct WinSize {
     y_pixel: u16,
 }
 
+#[repr(C)]
+struct PollFd {
+    fd: c_int,
+    events: c_short,
+    revents: c_short,
+}
+
 unsafe extern "C" {
+    fn poll(fds: *mut PollFd, nfds: c_ulong, timeout_ms: c_int) -> c_int;
     fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
     fn getpgrp() -> c_int;
     fn tcgetpgrp(fd: c_int) -> c_int;
@@ -140,6 +149,33 @@ impl Terminal {
                 Ok(false)
             }
             Err(error) => Err(error),
+        }
+    }
+
+    fn wait_writable(&self) -> io::Result<()> {
+        let mut entry = PollFd {
+            fd: self.fd(),
+            events: POLLOUT,
+            revents: 0,
+        };
+        // SAFETY: the owned terminal fd is live and the Linux pollfd
+        // remains writable for the syscall. Bound the wait so q, resize and
+        // signals are checked promptly even if output never drains.
+        let status = unsafe {
+            poll(
+                &mut entry,
+                1,
+                playback::BACKPRESSURE_POLL.as_millis() as c_int,
+            )
+        };
+        if status >= 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted {
+            Ok(())
+        } else {
+            Err(error)
         }
     }
 
@@ -275,24 +311,29 @@ impl Screen {
     }
 
     fn frame(&self, packet: &[u8], viewport: Display, deadline: Instant) -> io::Result<()> {
-        playback::write_bounded(&self.terminal.0, packet, || {
-            if self.stopping()? {
-                return Err(io::Error::other("playback stopped"));
-            }
-            if Instant::now() >= deadline {
-                return Err(io::ErrorKind::TimedOut.into());
-            }
-            let actual = self.terminal.display()?;
-            if actual == viewport {
-                Ok(())
-            } else if !actual.size.fits() {
-                Err(io::Error::other(size_error(actual.size)))
-            } else {
-                Err(io::Error::other(
-                    "terminal resized while a frame was in flight",
-                ))
-            }
-        })
+        playback::write_bounded_with_wait(
+            &self.terminal.0,
+            packet,
+            || {
+                if self.stopping()? {
+                    return Err(io::Error::other("playback stopped"));
+                }
+                if Instant::now() >= deadline {
+                    return Err(io::ErrorKind::TimedOut.into());
+                }
+                let actual = self.terminal.display()?;
+                if actual == viewport {
+                    Ok(())
+                } else if !actual.size.fits() {
+                    Err(io::Error::other(size_error(actual.size)))
+                } else {
+                    Err(io::Error::other(
+                        "terminal resized while a frame was in flight",
+                    ))
+                }
+            },
+            || self.terminal.wait_writable(),
+        )
     }
 
     fn restore(&mut self) -> io::Result<()> {

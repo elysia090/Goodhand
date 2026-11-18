@@ -166,7 +166,7 @@ impl ArmSampler {
     fn sample_row(&self, row_origin: Vec3, x: f64) -> Option<u8> {
         let origin = row_origin + self.camera.right * x;
         let point = self.camera.trace(origin, &self.model, self.bounds)?;
-        let normal = self.model.normal(point);
+        let normal = self.model.normal(point, self.bounds);
         let receiver = self.model.palm_receiving_weight(point, normal);
         let (floor, reflected) = self.lights.base_light(point, normal, receiver);
         let direct_scale = if self.attrs.contact_shadow {
@@ -490,10 +490,28 @@ impl Arm {
         }
     }
 
-    fn distance(&self, p: Vec3) -> f64 {
+    fn distance(&self, p: Vec3, bounds: ArmBounds) -> f64 {
+        let arm = self.arm_distance(p);
+        // Each primitive has an x-axis lower bound outside its grown
+        // interval. The hand interval includes every possible reduction
+        // from its smooth joins, so their union cannot get nearer than
+        // this deliberately loose slope. When it stays outside the
+        // forearm blend, returning arm is identical to evaluating the join.
+        let left_gap = bounds.hand.min.x - p.x;
+        // Keep extra slack for floating-point arithmetic near the blend.
+        if left_gap > 0.0 && left_gap * bounds.hand_x_slope > arm + WRIST_BLEND + 1e-12 {
+            return arm;
+        }
+        self.hand_distance(p, arm)
+    }
+
+    fn arm_distance(&self, p: Vec3) -> f64 {
         // Intersect with a plane to keep the proximal end intentionally cut.
         let cut = -p.x - 0.882 - 0.19 * (p.y + 0.19);
-        let arm = self.forearm.distance(p).max(cut);
+        self.forearm.distance(p).max(cut)
+    }
+
+    fn hand_distance(&self, p: Vec3, arm: f64) -> f64 {
         let hand = smooth_join(self.palm.distance(p), self.heel.distance(p), HEEL_BLEND);
         let hand = smooth_join(hand, self.thumb.distance(p), THUMB_BLEND);
         let hand = smooth_join(hand, self.lower_fold.distance(p), HAND_BLEND);
@@ -511,7 +529,21 @@ impl Arm {
         let grown = |remaining_joins: u8| wrist + 0.25 * HAND_BLEND * f64::from(remaining_joins);
         let thumb = grown(5) + 0.25 * THUMB_BLEND;
         let heel = thumb + 0.25 * HEEL_BLEND;
+        let ellipsoids = [
+            &self.palm,
+            &self.heel,
+            &self.lower_fold,
+            &self.upper_fold,
+            &self.inner_fold,
+        ];
+        let tapers = [&self.thumb, &self.raised_finger, &self.extended_finger];
+        let hand_x_slope = ellipsoids
+            .iter()
+            .map(|e| e.min_radius * e.inverse_radius.x)
+            .chain(tapers.iter().map(|t| t.distance_scale))
+            .fold(1.0_f64, f64::min);
         ArmBounds {
+            hand_x_slope,
             forearm: self.forearm.bounds(wrist),
             hand: self
                 .palm
@@ -563,14 +595,14 @@ impl Arm {
         1.0 - 0.19 * proximity * lower_facing * end
     }
 
-    fn normal(&self, point: Vec3) -> Vec3 {
+    fn normal(&self, point: Vec3, bounds: ArmBounds) -> Vec3 {
         let x = Vec3::new(0.0015, 0.0, 0.0);
         let y = Vec3::new(0.0, 0.0015, 0.0);
         let z = Vec3::new(0.0, 0.0, 0.0015);
         let gradient = Vec3::new(
-            self.distance(point + x) - self.distance(point - x),
-            self.distance(point + y) - self.distance(point - y),
-            self.distance(point + z) - self.distance(point - z),
+            self.distance(point + x, bounds) - self.distance(point - x, bounds),
+            self.distance(point + y, bounds) - self.distance(point - y, bounds),
+            self.distance(point + z, bounds) - self.distance(point - z, bounds),
         );
         gradient * gradient.length().max(1.0e-8).recip()
     }
@@ -585,6 +617,7 @@ fn smooth_join(a: f64, b: f64, width: f64) -> f64 {
 struct ArmBounds {
     forearm: Bounds,
     hand: Bounds,
+    hand_x_slope: f64,
 }
 
 struct Camera {
@@ -635,7 +668,7 @@ impl Camera {
         let mut travel = near;
         for step in 0..GRAZING_LIMIT {
             let probe = origin + self.direction * travel;
-            let distance = model.distance(probe);
+            let distance = model.distance(probe, bounds);
             if distance <= HIT {
                 return Some(probe);
             }
@@ -765,6 +798,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hand_bound_matches_the_unpruned_field_through_the_wrist() {
+        let arm = Arm::new();
+        let bounds = arm.bounds();
+        let mut skips = 0;
+        for ix in -92..=45 {
+            for iy in -24..=24 {
+                for iz in -6..=6 {
+                    let p = Vec3::new(
+                        f64::from(ix) / 100.0,
+                        f64::from(iy) / 50.0,
+                        f64::from(iz) / 20.0,
+                    );
+                    let stock = arm.arm_distance(p);
+                    let unpruned = arm.hand_distance(p, stock);
+                    let gap = bounds.hand.min.x - p.x;
+                    if gap > 0.0 && gap * bounds.hand_x_slope > stock + WRIST_BLEND + 1e-12 {
+                        skips += 1;
+                    }
+                    assert_eq!(arm.distance(p, bounds).to_bits(), unpruned.to_bits());
+                }
+            }
+        }
+        assert!(skips > 1000);
+    }
+
+    #[test]
     fn foreshortened_forearm_keeps_a_shallow_capped_section() {
         let arm = ArmSampler::new(90.0).unwrap();
         // The far edge belongs to the cut arm, below the palm and fingers.
@@ -784,7 +843,7 @@ mod tests {
             for i in 0..=8 {
                 let t = f64::from(i) / 8.0;
                 let point = fold.center + (arm.palm.center - fold.center) * t;
-                assert!(arm.distance(point) < 0.0);
+                assert!(arm.distance(point, arm.bounds()) < 0.0);
             }
         }
     }

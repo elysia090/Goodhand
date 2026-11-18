@@ -33,9 +33,11 @@ without forcing a corrupt draw. --measure reports timings after terminal
 restoration. Timing percentiles and maxima describe frames submitted
 completely to the tty. The stale counter counts completed renders discarded
 before submission. The late-write counter counts completed writes that
-crossed their tick boundary. The measured write step is submission to the
-tty, not compositor or display timing. Work can be dropped under load,
-and the CLI never queues stale frames to catch up.
+crossed their tick boundary. When a nonblocking write would block, the
+frame writer waits briefly for output readiness instead of imposing a
+fixed delay before every retry. The measured write step is submission to
+the tty, not compositor or display timing. Work can be dropped under
+load, and the CLI never queues stale frames to catch up.
 
 In one GNU/Linux x86-64 Xfce Terminal run per size (VTE 0.80.1, default
 base, width:height pitch assumed 1:2), the pilot observed:
