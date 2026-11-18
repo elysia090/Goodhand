@@ -79,6 +79,10 @@ interpolation, or adoption decisions occur. Preview PNGs retain the historical
 `reference-fNNN.png` filenames and `reference-redraw.json` report name for either
 role; the report identifies the role explicitly.
 
+If you already have a lossless fixed-grid review such as V3, use
+[review recovery](docs/review-recovery.md) to recover its gray with the
+original independent occupancy. No pose guide or authoring recipe is used.
+
 Use a new output directory for every preview or tone export. Existing directories,
 even empty ones, are rejected. Partial outputs after an I/O failure are not a
 completed export; use a fresh destination when retrying. Source validation happens
