@@ -177,6 +177,46 @@ def assert_partial_wire_is_recoverable(packet):
     assert {(1, 0), (2, 0), (0, 1), (0, 2)} <= cuts, cuts
 
 
+def assert_resize_wire(raw, first, before, after, cols, rows):
+    # A completed old packet ends in bottom-row CUP. Anything accepted
+    # after the last such marker needs CAN before the first layout clear.
+    clear = b"\x1b[2J"
+    clear_end = raw.index(clear, first) + len(clear)
+    assert clear_end < raw.index(after)
+    resynced = raw[:clear_end].endswith(RESYNC)
+    control = RESYNC if resynced else clear
+    last_old_bytes = raw[first:clear_end - len(control)]
+    truncated = bool(last_old_bytes.rsplit(before, 1)[-1])
+    assert resynced == truncated, (resynced, last_old_bytes[-80:])
+    positions = re.findall(rb"\x1b\[(\d+);(\d+)H", raw[clear_end:])
+    assert positions and all(1 <= int(y) <= rows and 1 <= int(x) <= cols for y, x in positions)
+    return resynced
+
+
+def test_resize_wire_expectations():
+    before, after = b"\x1b[97;1H", b"\x1b[85;1H"
+    old_complete = b"old diff" + before
+    partial_ansi = b"old diff\x1b[38;2;"
+    clear = b"\x1b[2J"
+    redrawn = b"\x1b[80;17Hnew canvas" + after
+    for old, control, result in (
+        (old_complete, clear, False),
+        (partial_ansi, RESYNC, True),
+        # Invalid streams: uncancelled partial ANSI, unnecessary cancel
+        # after a finished packet, or an old cursor position after clearing.
+        (partial_ansi, clear, None),
+        (old_complete, RESYNC, None),
+        (old_complete, clear + b"\x1b[96;50H", None),
+    ):
+        raw = before + old + control + redrawn
+        try:
+            actual = assert_resize_wire(raw, len(before), before, after, 213, 85)
+        except AssertionError:
+            assert result is None, raw
+        else:
+            assert actual is result, raw
+
+
 def tests(binary, *, full, strict):
     for args, code, out in [
         (["--help"], 0, b"Usage: oops"),
@@ -368,20 +408,26 @@ def tests(binary, *, full, strict):
         assert RESYNC not in raw and not err, err
     print("PASS q during the recovery wait restores without forcing a new frame")
 
-    # Change the viewport while there is an undrained partial packet. The
-    # old coordinates must not be resumed, and resize within bounds is not fatal.
+    test_resize_wire_expectations()
+    # Resize right as the next packet is being received. The remaining bytes
+    # may reach the tty before ioctl on a faster runner. Inspect the accepted
+    # stream rather than assuming that a partial read implies a partial write.
     with Session([binary], cols=290, rows=97) as s:
-        s.partial_next_frame(b"\x1b[97;1H")
+        before = b"\x1b[97;1H"
+        after = b"\x1b[85;1H"
+        s.until(before)
+        first = s.raw.index(before) + len(before)
+        s.until(lambda raw: len(raw) >= first + 1024)
         s.geometry(213, 85)
-        s.until(lambda raw: RESYNC in raw and b"\x1b[85;1H" in raw.rsplit(RESYNC, 1)[1])
+        s.until(after)
         os.write(s.master, b"q")
         raw, err, _ = s.end(0)
         assert_scope(raw)
-        redrawn = raw.split(RESYNC, 1)[1]
-        positions = re.findall(rb"\x1b\[(\d+);(\d+)H", redrawn)
-        assert positions and all(1 <= int(y) <= 85 and 1 <= int(x) <= 213 for y, x in positions)
+
+        outcome = assert_resize_wire(raw, first, before, after, 213, 85)
         assert not err
-    print("PASS in-flight usable resize clears the old partial frame and redraws within the new size")
+    mode = "partial old packet" if outcome else "completed old packet"
+    print(f"PASS usable resize with {mode}; both legal wire cases and invalid controls checked")
 
     # Actual foreground shell process, real keyboard VINTR, then a fresh
     # shell command. ANSI is captured, not interpreted by a GUI terminal.
