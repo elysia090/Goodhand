@@ -432,51 +432,53 @@ struct Arm {
 impl Arm {
     fn new() -> Self {
         // The long arm points right, up is +y, and the palm faces toward +z.
+        // Wrist and palm sit behind the spread fingertips. Model that
+        // depth here so foreshortening works in both directions at any yaw.
         Self {
             forearm: Taper::new(
-                Vec3::new(-0.81, -0.192, -0.015),
-                Vec3::new(0.13, -0.057, -0.012),
+                Vec3::new(-0.81, -0.192, -0.074),
+                Vec3::new(0.13, -0.057, -0.067),
                 0.159,
                 0.108,
                 1.31,
             ),
             palm: Ellipsoid::new(
-                Vec3::new(0.335, 0.012, -0.010),
+                Vec3::new(0.335, 0.012, -0.048),
                 Vec3::new(0.310, 0.171, 0.160),
             ),
             heel: Ellipsoid::new(
-                Vec3::new(0.194, 0.050, -0.010),
+                Vec3::new(0.194, 0.050, -0.057),
                 Vec3::new(0.177, 0.147, 0.140),
             ),
             thumb: Taper::new(
-                Vec3::new(0.195, 0.054, 0.106),
-                Vec3::new(0.422, -0.058, 0.158),
+                Vec3::new(0.195, 0.054, 0.054),
+                Vec3::new(0.422, -0.058, 0.105),
                 0.077,
                 0.067,
                 0.95,
             ),
             front_fold: Ellipsoid::new(
-                Vec3::new(0.484, -0.066, -0.056),
+                Vec3::new(0.484, -0.066, -0.080),
                 Vec3::new(0.125, 0.098, 0.132),
             ),
             mid_fold: Ellipsoid::new(
-                Vec3::new(0.446, -0.079, 0.076),
+                Vec3::new(0.446, -0.079, 0.035),
                 Vec3::new(0.115, 0.089, 0.126),
             ),
             back_fold: Ellipsoid::new(
-                Vec3::new(0.325, -0.080, 0.128),
+                Vec3::new(0.325, -0.080, 0.083),
                 Vec3::new(0.111, 0.099, 0.098),
             ),
             raised_finger: Taper::new(
-                Vec3::new(0.40, 0.099, -0.004),
-                Vec3::new(0.741, 0.342, -0.035),
+                Vec3::new(0.40, 0.099, -0.027),
+                Vec3::new(0.753, 0.336, -0.058),
                 0.072,
                 0.050,
                 0.85,
             ),
             extended_finger: Taper::new(
-                Vec3::new(0.408, 0.071, 0.045),
-                Vec3::new(0.844, 0.136, 0.025),
+                Vec3::new(0.408, 0.071, 0.013),
+                Vec3::new(0.861, 0.141, 0.022),
                 0.063,
                 0.046,
                 0.91,

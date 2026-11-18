@@ -6,7 +6,10 @@ at the requested yaw. Neither it nor the terminal needs the baseline
 movie, recovered frames, a pose guide, a mesh or per-angle table.
 
 - **Base shape:** tapered sections and rounded planes join around the
-  wrist and the folded thumb. The cut is a plane, not a spherical end.
+  wrist and the folded thumb. The palm and forearm sit farther back
+  than the fingertips. This depth is part of the shape, so the sides
+  foreshorten without any angle-specific translations. The cut is a
+  plane, not a spherical end.
   The open-finger gap is real empty space in the model, not black paint.
 - **Base tone:** the same fixed keys light the changing physical
   normals. The cut face's matte material and the gentle floor in
