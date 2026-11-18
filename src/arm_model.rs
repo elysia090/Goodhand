@@ -18,6 +18,12 @@ const HEEL_BLEND: f64 = 0.028;
 const THUMB_BLEND: f64 = 0.018;
 const HAND_BLEND: f64 = 0.019;
 const WRIST_BLEND: f64 = 0.060;
+// A broad material bank faces the lower, rear side of the tapered arm.
+const FOREARM_BANK: Vec3 = Vec3::new(
+    0.16034511339036536,
+    -0.651_402_023_148_359_3,
+    -0.741_596_149_430_439_8,
+);
 
 /// A view of the same modeled gesture at any finite yaw, on a caller's grid.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -736,6 +742,7 @@ struct SceneLights {
     key: Vec3,
     fill: Vec3,
     palm_key: f64,
+    forearm_key: f64,
 }
 
 impl SceneLights {
@@ -755,11 +762,32 @@ impl SceneLights {
         // Its response follows the existing key, not the viewing angle.
         let palm_normal = Vec3::new(-0.665, 0.29, 0.6883);
         let palm_key = 0.85 * palm_normal.dot(key).clamp(0.0, 1.0).powf(1.8);
+        // A fixed weak bounce from below. Compute the incident response
+        // once for the broad bank; its footprint still follows each ray's
+        // real hit and surface normal.
+        let bounce = Vec3::new(0.30, -0.55, 0.78);
+        let bounce = camera.model_direction(bounce * bounce.length().recip());
+        let forearm_key = 38.0 * smooth_step((FOREARM_BANK.dot(bounce) - 0.78) / 0.22);
         Self {
             key,
             fill: camera.model_direction(fill),
             palm_key,
+            forearm_key,
         }
+    }
+
+    fn forearm_bounce(&self, point: Vec3, normal: Vec3) -> f64 {
+        if self.forearm_key == 0.0 || !(-0.875..-0.05).contains(&point.x) {
+            return 0.0;
+        }
+        let facing = FOREARM_BANK.dot(normal);
+        if facing <= 0.71 {
+            return 0.0;
+        }
+        // Fade before the cut and wrist instead of ringing either edge.
+        let along =
+            smooth_step((point.x + 0.875) / 0.16) * (1.0 - smooth_step((point.x + 0.29) / 0.24));
+        self.forearm_key * along * smooth_step((facing - 0.71) / 0.29)
     }
 
     fn base_light(&self, point: Vec3, normal: Vec3, receiver: f64) -> (f64, f64) {
@@ -775,7 +803,9 @@ impl SceneLights {
         let floor = 34.3 + 7.0 * smooth_step((normal.y + 0.19) / 0.90);
         let fill = (0.012 + 0.12 * palm) * fill;
         let incident = key.max(fill);
-        let reflected = 116.43 * incident * material;
+        // Keep the stronger response rather than adding strength to an
+        // already-lit forearm. The ambient floor stays independent.
+        let reflected = (116.43 * incident * material).max(self.forearm_bounce(point, normal));
         if receiver == 0.0 || floor + reflected <= 44.0 {
             return (floor, reflected);
         }
@@ -796,6 +826,29 @@ fn smooth_step(t: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forearm_bounce_reads_a_bank_without_changing_the_ambient_floor() {
+        let lights = SceneLights::new(&Camera::new(-135.0));
+        let off = SceneLights {
+            forearm_key: 0.0,
+            ..lights
+        };
+        let bank = Vec3::new(-0.58, -0.14, -0.16);
+        let (floor, reflected) = lights.base_light(bank, FOREARM_BANK, 0.0);
+        let (plain_floor, plain_reflected) = off.base_light(bank, FOREARM_BANK, 0.0);
+        assert_eq!(floor, plain_floor);
+        assert!(reflected > plain_reflected + 12.0);
+        for (p, n) in [
+            (bank, Vec3::new(0.0, 1.0, 0.0)),
+            (bank, Vec3::new(-1.0, 0.0, 0.0)),
+            (Vec3::new(0.1, -0.1, -0.1), FOREARM_BANK),
+        ] {
+            assert_eq!(lights.base_light(p, n, 0.0), off.base_light(p, n, 0.0));
+        }
+        let front = SceneLights::new(&Camera::new(0.0));
+        assert_eq!(front.forearm_bounce(bank, FOREARM_BANK), 0.0);
+    }
 
     #[test]
     fn hand_bound_matches_the_unpruned_field_through_the_wrist() {

@@ -25,6 +25,10 @@ movie, recovered frames, a pose guide, a mesh or per-angle table.
   hand. Its support is expressed in palm coordinates, not screen cells
   or an angle table. The light response is an authored model, not a
   reconstruction of the reference capture or its original lighting.
+  The lower rear forearm also receives a weak, fixed bounce. Its light
+  follows a broad material plane and falls away before the cut or wrist.
+  Where the main light is already stronger, it leaves that tone alone.
+  It does not lift the ambient floor or change occupancy.
 - **Attrs:** a correction must identify a part of the live model,
   what it changes and where it abstains. Keep it separable while it is
   being compared. If the effect is reproducible and useful, put the
@@ -34,7 +38,7 @@ movie, recovered frames, a pose guide, a mesh or per-angle table.
   `ArmSampler::with_attrs` exposes an opt-in
   short contact shadow where two modeled surfaces meet. It changes
   reflected light, not the shadow floor or occupancy. It is off by
-  default; the separate broad-forearm study is not part of the base.
+  default. No view-wide contrast adjustment is applied.
 - **Projection:** sample the same continuous world-space model at any
   finite yaw and requested viewport. Fit the physical aspect instead
   of stretching the figure; a zoom can crop but cannot distort it.
