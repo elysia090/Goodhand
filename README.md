@@ -1,16 +1,17 @@
 # Goodhand
 
-A small, dependency-free Rust library for a fixed-grid rotating hand artwork.
-Shape, grayscale tone, timing, and pixel placement have separate contracts.
+A small Rust library and terminal pilot for a rotating hand artwork.
+Shape, grayscale tone, timing, and terminal placement have separate contracts.
 Offline Python tools prepare and inspect data; they are not runtime dependencies.
 The [visual baseline](reference/visual-baseline/) is the approved appearance
 for comparison. The [source study](reference/source-study/) preserves the
 earlier authored gray and the independent occupancy shared by both snapshots.
 They are offline references, not runtime inputs. Source imagery is not included.
 
-This is a library, not a terminal application. Terminal output, real-device
-performance, and final artistic acceptance remain unverified. See
-[design and quality gates](DESIGN.md) and the [tone input contract](docs/tone.md).
+The terminal pilot renders the generative model, not the offline reference
+files. See [design and quality gates](DESIGN.md) and the
+[tone input contract](docs/tone.md). The pilot is not a release or final
+artistic acceptance.
 
 ## Library
 
@@ -41,6 +42,22 @@ yaw and physical sample aspect. It writes separate occupancy and gray
 to caller-owned buffers, with no frame data or video input. The new
 model is an approximation of the visual baseline, not a reconstruction
 of its underlying geometry. See the [base and attr design](docs/generative-base.md).
+
+## Terminal pilot
+
+From the repository root on GNU/Linux x86-64:
+
+```sh
+cargo build --offline --release --locked --manifest-path tools/oops/Cargo.toml
+./tools/oops/target/release/oops --check
+./tools/oops/target/release/oops
+```
+
+In the tested foreground Xfce Terminal profile, the binary runs one 30-second
+rotation and returns to the shell. Press q or Ctrl-C to stop early. It needs
+a terminal of at least 92 columns × 45 rows, UTF-8, and true color. There is
+no runtime Python, video, or artwork input. See the
+[terminal pilot guide](tools/oops/README.md) for constraints and timing.
 
 ## Checks
 

@@ -1,0 +1,14 @@
+[package]
+name = "oops"
+version = "0.0.1"
+edition = "2024"
+publish = false
+rust-version = "1.85"
+description = "A synthetic terminal playback pilot"
+
+[profile.release]
+lto = true
+strip = true
+
+[dependencies]
+goodhand = { path = "../.." }

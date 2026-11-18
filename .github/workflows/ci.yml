@@ -64,6 +64,7 @@ jobs:
             /Cargo.lock
             /src/
             /tests/
+            /tools/oops/
       - name: Set up the validated Rust toolchain
         run: >-
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
@@ -81,6 +82,17 @@ jobs:
       - name: Build the Wasm release library
         # Compilation only; not a browser, terminal, or performance test.
         run: cargo +"$RUST_TOOLCHAIN" build --locked --release --lib --target wasm32-unknown-unknown
+
+      - name: Check the terminal pilot
+        run: |
+          manifest=tools/oops/Cargo.toml
+          cargo +"$RUST_TOOLCHAIN" fmt --manifest-path "$manifest" --all -- --check
+          cargo +"$RUST_TOOLCHAIN" clippy --manifest-path "$manifest" --offline --locked --all-targets -- -D warnings
+          cargo +"$RUST_TOOLCHAIN" test --manifest-path "$manifest" --offline --locked
+          cargo +"$RUST_TOOLCHAIN" test --manifest-path "$manifest" --offline --release --locked
+          cargo +"$RUST_TOOLCHAIN" build --manifest-path "$manifest" --offline --release --locked
+          # Kernel PTY only. No GUI/presentation or artwork acceptance claim.
+          python3 tools/oops/tests/pty_smoke.py tools/oops/target/release/oops --full
 
   msrv:
     # Cargo.toml declares 1.70; it has NOT been executed locally.
