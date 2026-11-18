@@ -15,6 +15,7 @@ from pathlib import Path
 
 ENTER = b"\x1b[?1049h"
 LEAVE = b"\x18\x1b[0m\x1b[?1049l"
+RESYNC = b"\x18\x1b[0m\x1b[48;2;0;0;0m\x1b[2J"
 TICK = re.compile(rb" / tick (\d{3})")
 FOREIGN = (b"\x1b[?25", b"\x1b[?7", b"\x1b]")
 
@@ -111,6 +112,62 @@ def assert_scope(raw):
     assert not any(token in raw for token in FOREIGN), "unowned mode changes"
     assert raw.count(b"\x1b[?1049l") == 1
     assert b"\n" not in raw and b"\r" not in raw, "might scroll the screen"
+
+
+def assert_partial_wire_is_recoverable(packet):
+    """Check every cut in the actual packet's promised VTE wire subset.
+
+    This models only ESC/CSI, CAN and the UTF-8 bullet. It does not replace
+    a real emulator check: VTE's CAN action and decoder recovery are the
+    protocol assumptions verified independently on the pilot profile.
+    """
+    def step(state, b):
+        esc, utf8 = state
+        if b == 0x18:  # CAN aborts a partial escape/control sequence.
+            return (b"", 0), None
+        if utf8:
+            assert 0x80 <= b < 0xC0, state
+            return (esc, utf8 - 1), None
+        if esc == b"\x1b":
+            assert b == ord("["), (esc, b)
+            return (esc + bytes([b]), 0), None
+        if esc:
+            assert esc.startswith(b"\x1b[")
+            extended = esc + bytes([b])
+            if 0x40 <= b <= 0x7E:
+                return (b"", 0), extended
+            assert 0x20 <= b <= 0x3F
+            return (extended, 0), None
+        if b == 0x1B:
+            return (b"\x1b", 0), None
+        if b == 0xE2:  # All non-ASCII in the frame is the UTF-8 bullet.
+            return (b"", 2), None
+        assert 0x20 <= b <= 0x7E
+        return (b"", 0), None
+
+    def commands(state, data):
+        result = []
+        for b in data:
+            state, cmd = step(state, b)
+            if cmd is not None:
+                result.append(cmd)
+        assert state == (b"", 0)
+        return result
+
+    state = (b"", 0)
+    cuts = set()
+    # Test the empty prefix, each byte boundary, and the complete packet.
+    for b in [None, *packet]:
+        if b is not None:
+            state, _ = step(state, b)
+        # The CAN action is independent of accumulated CSI parameters.
+        kind = (len(state[0]), state[1])
+        if kind not in cuts:
+            assert commands(state, RESYNC) == [b"\x1b[0m", b"\x1b[48;2;0;0;0m", b"\x1b[2J"]
+            assert commands(state, LEAVE) == [b"\x1b[0m", b"\x1b[?1049l"]
+            cuts.add(kind)
+    assert state == (b"", 0)
+    assert {(1, 0), (2, 0), (0, 1), (0, 2)} <= cuts, cuts
 
 
 def tests(binary, *, full, strict):
@@ -242,6 +299,89 @@ def tests(binary, *, full, strict):
         assert ticks == sorted(set(ticks)), ticks
     print("PASS blocked schedule skips stale ticks instead of replaying a FIFO")
 
+    # Fill the kernel tty queue after a valid frame. A temporary reader
+    # stall exceeding the packet budget must not end the 30-second run.
+    # Repeat during full repaint as well; that interrupted repaint must
+    # not become the diff baseline.
+    with Session([binary, "--measure"], cols=290, rows=97) as s:
+        bottom = b"\x1b[97;1H"
+        s.until(bottom)
+        time.sleep(0.42)
+        assert s.proc.poll() is None, "a temporary stall ended playback"
+        s.until(lambda raw: RESYNC in raw and len(raw.rsplit(RESYNC, 1)[1]) >= 1024)
+        assert bottom not in s.raw.rsplit(RESYNC, 1)[1], "already received the full repaint"
+        time.sleep(0.42)
+        assert s.proc.poll() is None, "a second stall ended playback"
+        s.until(lambda raw: raw.count(RESYNC) >= 2 and bottom in raw.rsplit(RESYNC, 1)[1])
+        os.write(s.master, b"q")
+        raw, err, _ = s.end(0)
+        assert_scope(raw)
+        ticks = [int(n) for n in TICK.findall(raw)]
+        assert ticks == sorted(set(ticks)) and ticks[-1] >= 16, ticks
+        assert max(b - a for a, b in zip(ticks, ticks[1:])) >= 7, ticks
+        report = re.search(rb"dropped_write=(\d+) partial_write=(\d+)", err)
+        assert report and int(report[2]) >= 2 and int(report[1]) >= int(report[2]), err
+        assert b"timed out" not in err
+        first = raw[:raw.index(bottom) + len(bottom)]
+        recovered = raw.rsplit(RESYNC, 1)[1]
+        recovered = recovered[:recovered.index(bottom) + len(bottom)]
+        assert_partial_wire_is_recoverable(first)
+        assert_partial_wire_is_recoverable(RESYNC + recovered)
+    print("PASS two temporary output stalls recover via fresh frames, never a stale suffix")
+
+    # Exercise line-discipline flow control as well as a full kernel
+    # queue. Depending on scheduling, TCOOFF may start between frame
+    # packets or when the next packet has already sent a prefix.
+    with Session([binary, "--measure"], cols=165, rows=55) as s:
+        s.until(b"\x1b[55;1H")
+        termios.tcflow(s.slave, termios.TCOOFF)
+        try:
+            time.sleep(0.42)
+            assert s.proc.poll() is None
+        finally:
+            termios.tcflow(s.slave, termios.TCOON)
+        s.until(lambda raw: any(int(n) >= 8 for n in TICK.findall(raw)))
+        os.write(s.master, b"q")
+        raw, err, _ = s.end(0)
+        assert_scope(raw)
+        report = re.search(rb"dropped_write=(\d+) partial_write=(\d+)", err)
+        assert report and int(report[1]) >= 1 and b"timed out" not in err, err
+        assert (RESYNC in raw) == (int(report[2]) != 0)
+    print("PASS terminal flow control resumes without repainting an untouched frame")
+
+    # Resume a recovery-waiting player with a key, not writable output.
+    # CAN must make even a partially submitted escape harmless before exit.
+    with Session([binary], cols=290, rows=97) as s:
+        s.until(b"\x1b[97;1H")
+        time.sleep(0.42)
+        assert s.proc.poll() is None
+        os.write(s.master, b"q")
+        raw, err, _ = s.end(0, timeout=1)
+        assert_scope(raw)
+        assert RESYNC not in raw and not err, err
+    print("PASS q during the recovery wait restores without forcing a new frame")
+
+    # Change the viewport while there is an undrained partial packet. The
+    # old coordinates must not be resumed, and resize within bounds is not fatal.
+    with Session([binary], cols=290, rows=97) as s:
+        bottom = b"\x1b[97;1H"
+        s.until(bottom)
+        first = s.raw.index(bottom) + len(bottom)
+        # Stop reading after an accepted prefix of the first large diff,
+        # rather than guessing when the renderer begins its write.
+        s.until(lambda raw: len(raw) >= first + 1024)
+        assert bottom not in s.raw[first:]
+        s.geometry(213, 85)
+        s.until(lambda raw: RESYNC in raw and b"\x1b[85;1H" in raw.rsplit(RESYNC, 1)[1])
+        os.write(s.master, b"q")
+        raw, err, _ = s.end(0)
+        assert_scope(raw)
+        redrawn = raw.split(RESYNC, 1)[1]
+        positions = re.findall(rb"\x1b\[(\d+);(\d+)H", redrawn)
+        assert positions and all(1 <= int(y) <= 85 and 1 <= int(x) <= 213 for y, x in positions)
+        assert not err
+    print("PASS in-flight usable resize clears the old partial frame and redraws within the new size")
+
     # Actual foreground shell process, real keyboard VINTR, then a fresh
     # shell command. ANSI is captured, not interpreted by a GUI terminal.
     with Session(["bash", "--noprofile", "--norc", "-i"], stderr_in_tty=True) as s:
@@ -286,6 +426,18 @@ def tests(binary, *, full, strict):
             if strict:
                 assert ticks == list(range(720)), f"only {len(ticks)} distinct ticks"
         print(f"PASS natural completion: {elapsed:.6f} s, {len(ticks)}/720 ticks, {len(raw)} bytes")
+        if not strict:
+            with Session([binary, "--measure"], cols=290, rows=97) as s:
+                s.until(lambda raw: any(int(n) >= 710 for n in TICK.findall(raw[-9000:])),
+                        timeout=32)
+                # Keep the tty congested across the absolute run deadline,
+                # then drain promptly enough to receive the bounded cleanup.
+                time.sleep(max(0.0, 30.08 - (time.monotonic() - s.start)))
+                raw, err, elapsed = s.end(0, timeout=1)
+                assert_scope(raw)
+                assert 29.9 <= elapsed < 31.0, (elapsed, err)
+                assert b"timed out" not in err and b"restoration was incomplete" not in err
+            print("PASS absolute run deadline restores after a partially stalled final turn")
 
 
 def main():

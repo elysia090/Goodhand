@@ -14,6 +14,8 @@ pub struct Measurement {
     pub traces: usize,
     pub stale: usize,
     pub late_write: usize,
+    pub dropped_write: usize,
+    pub partial_write: usize,
     pub bytes: usize,
     pub layout: Option<Layout>,
     timings: Vec<Timings>,
@@ -26,6 +28,8 @@ impl Measurement {
             traces: 0,
             stale: 0,
             late_write: 0,
+            dropped_write: 0,
+            partial_write: 0,
             bytes: 0,
             layout: None,
             timings: Vec::with_capacity(if enabled { TICKS as usize } else { 0 }),
@@ -65,12 +69,14 @@ impl Measurement {
             format!("{}/{}", p95, times.last().copied().unwrap_or(0))
         };
         Some(format!(
-            "oops: grid={layout} written={}/{} rendered={} stale={} late_write={} bytes={} trace_p95/max_us={} encode_p95/max_us={} write_p95/max_us={}\n",
+            "oops: grid={layout} written={}/{} rendered={} stale={} late_write={} dropped_write={} partial_write={} bytes={} trace_p95/max_us={} encode_p95/max_us={} write_p95/max_us={}\n",
             self.timings.len(),
             TICKS,
             self.traces,
             self.stale,
             self.late_write,
+            self.dropped_write,
+            self.partial_write,
             self.bytes,
             timing(|t| t.trace),
             timing(|t| t.encode),

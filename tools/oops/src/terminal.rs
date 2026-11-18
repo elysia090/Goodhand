@@ -19,6 +19,7 @@ const TIOCGWINSZ: c_ulong = 0x5413;
 const O_NOCTTY: c_int = 0o400;
 const O_NONBLOCK: c_int = 0o4000;
 const POLLOUT: c_short = 0x004;
+const POLL_FAILURE: c_short = 0x008 | 0x010 | 0x020; // ERR, HUP, NVAL
 const SIGHUP: c_int = 1;
 const SIGINT: c_int = 2;
 const SIGQUIT: c_int = 3;
@@ -152,7 +153,7 @@ impl Terminal {
         }
     }
 
-    fn wait_writable(&self) -> io::Result<()> {
+    fn wait_writable(&self) -> io::Result<bool> {
         let mut entry = PollFd {
             fd: self.fd(),
             events: POLLOUT,
@@ -169,11 +170,17 @@ impl Terminal {
             )
         };
         if status >= 0 {
-            return Ok(());
+            if entry.revents & POLL_FAILURE != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "terminal output is unavailable",
+                ));
+            }
+            return Ok(entry.revents & POLLOUT != 0);
         }
         let error = io::Error::last_os_error();
         if error.kind() == io::ErrorKind::Interrupted {
-            Ok(())
+            Ok(false)
         } else {
             Err(error)
         }
@@ -257,6 +264,22 @@ struct Screen {
     quit_pressed: Cell<bool>,
 }
 
+enum FrameStop {
+    EndOfRun,
+    Backpressure,
+    ViewportChanged,
+    Error(io::Error),
+}
+
+enum FrameResult {
+    Submitted,
+    EndOfRun,
+    Dropped {
+        wait_for_output: bool,
+        partial: bool,
+    },
+}
+
 struct TrackEntry<'a> {
     output: &'a File,
     entered: &'a mut bool,
@@ -310,30 +333,51 @@ impl Screen {
         Ok(self.quit_pressed.get())
     }
 
-    fn frame(&self, packet: &[u8], viewport: Display, deadline: Instant) -> io::Result<()> {
-        playback::write_bounded_with_wait(
+    fn frame(
+        &self,
+        packet: &[u8],
+        viewport: Display,
+        end: Instant,
+        frame_deadline: Instant,
+    ) -> io::Result<FrameResult> {
+        use playback::PacketError;
+        let result = playback::write_bounded_with_wait(
             &self.terminal.0,
             packet,
             || {
-                if self.stopping()? {
-                    return Err(io::Error::other("playback stopped"));
+                if self.stopping().map_err(FrameStop::Error)? {
+                    return Err(FrameStop::Error(io::Error::other("playback stopped")));
                 }
-                if Instant::now() >= deadline {
-                    return Err(io::ErrorKind::TimedOut.into());
+                let now = Instant::now();
+                if now >= end {
+                    return Err(FrameStop::EndOfRun);
                 }
-                let actual = self.terminal.display()?;
+                if now >= frame_deadline {
+                    return Err(FrameStop::Backpressure);
+                }
+                let actual = self.terminal.display().map_err(FrameStop::Error)?;
                 if actual == viewport {
                     Ok(())
                 } else if !actual.size.fits() {
-                    Err(io::Error::other(size_error(actual.size)))
+                    Err(FrameStop::Error(io::Error::other(size_error(actual.size))))
                 } else {
-                    Err(io::Error::other(
-                        "terminal resized while a frame was in flight",
-                    ))
+                    Err(FrameStop::ViewportChanged)
                 }
             },
-            || self.terminal.wait_writable(),
-        )
+            || self.terminal.wait_writable().map(|_| ()),
+        );
+        match result {
+            Ok(()) => Ok(FrameResult::Submitted),
+            Err(PacketError::Stopped { cause, written }) => match cause {
+                FrameStop::Backpressure | FrameStop::ViewportChanged => Ok(FrameResult::Dropped {
+                    wait_for_output: matches!(cause, FrameStop::Backpressure),
+                    partial: written != 0,
+                }),
+                FrameStop::Error(error) => Err(error),
+                FrameStop::EndOfRun => Ok(FrameResult::EndOfRun),
+            },
+            Err(PacketError::Io(error)) => Err(error),
+        }
     }
 
     fn restore(&mut self) -> io::Result<()> {
@@ -387,6 +431,7 @@ fn play(screen: &Screen, stats: &mut Measurement) -> io::Result<()> {
     let mut packet = Vec::with_capacity(64_000);
     let mut painter = Painter::default();
     let mut attempted = None;
+    let mut awaiting_output = false;
     loop {
         if screen.stopping()? {
             return Ok(());
@@ -397,6 +442,13 @@ fn play(screen: &Screen, stats: &mut Measurement) -> io::Result<()> {
         let observed = screen.terminal.display()?;
         if !observed.size.fits() {
             return Err(io::Error::other(size_error(observed.size)));
+        }
+        if awaiting_output {
+            // A congested tty should not provoke fresh renders or more
+            // writes until it can accept output again. Recompute the tick
+            // and viewport after readiness, never resume the old prefix.
+            awaiting_output = !screen.terminal.wait_writable()?;
+            continue;
         }
         let next = start + playback::start_of_tick(tick + 1);
         if attempted != Some(tick) {
@@ -411,8 +463,8 @@ fn play(screen: &Screen, stats: &mut Measurement) -> io::Result<()> {
                 continue;
             }
             let begin_write = Instant::now();
-            match screen.frame(&packet, observed, end.min(begin_write + FRAME_BUDGET)) {
-                Ok(()) => {
+            match screen.frame(&packet, observed, end, begin_write + FRAME_BUDGET)? {
+                FrameResult::Submitted => {
                     let write = begin_write.elapsed();
                     stats.bytes += packet.len();
                     stats.layout = Some(layout);
@@ -424,10 +476,19 @@ fn play(screen: &Screen, stats: &mut Measurement) -> io::Result<()> {
                     });
                     painter.submitted(layout);
                 }
-                Err(error) if error.kind() == io::ErrorKind::TimedOut && Instant::now() >= end => {
-                    return Ok(());
+                FrameResult::EndOfRun => return Ok(()),
+                FrameResult::Dropped {
+                    wait_for_output,
+                    partial,
+                } => {
+                    stats.dropped_write += 1;
+                    if partial {
+                        stats.partial_write += 1;
+                        painter.interrupted_submission();
+                    }
+                    awaiting_output = wait_for_output;
+                    continue;
                 }
-                Err(error) => return Err(error),
             }
         }
         std::thread::sleep(

@@ -29,26 +29,46 @@ pub fn write_bounded(
         std::thread::sleep(BACKPRESSURE_POLL);
         Ok(())
     })
+    .map_err(|error| match error {
+        PacketError::Stopped { cause, .. } | PacketError::Io(cause) => cause,
+    })
+}
+
+#[derive(Debug)]
+pub enum PacketError<E> {
+    /// The caller stopped this packet before completion. An accepted prefix
+    /// cannot be taken back and may include incomplete terminal sequences.
+    Stopped {
+        cause: E,
+        written: usize,
+    },
+    Io(io::Error),
 }
 
 /// The output wait must be bounded so the next iteration can recheck
 /// cancellation, viewport and wall-clock budget before writing again.
-pub fn write_bounded_with_wait(
+pub fn write_bounded_with_wait<E>(
     mut sink: impl Write,
     mut remaining: &[u8],
-    mut check: impl FnMut() -> io::Result<()>,
+    mut check: impl FnMut() -> Result<(), E>,
     mut wait: impl FnMut() -> io::Result<()>,
-) -> io::Result<()> {
+) -> Result<(), PacketError<E>> {
+    let len = remaining.len();
     while !remaining.is_empty() {
-        check()?;
+        if let Err(cause) = check() {
+            return Err(PacketError::Stopped {
+                cause,
+                written: len - remaining.len(),
+            });
+        }
         match sink.write(remaining) {
-            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(0) => return Err(PacketError::Io(io::ErrorKind::WriteZero.into())),
             Ok(count) => remaining = &remaining[count..],
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                wait()?;
+                wait().map_err(PacketError::Io)?;
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(PacketError::Io(error)),
         }
     }
     Ok(())
@@ -131,7 +151,7 @@ mod tests {
         write_bounded_with_wait(
             &mut out,
             b"abc",
-            || {
+            || -> io::Result<()> {
                 checks += 1;
                 Ok(())
             },
@@ -162,6 +182,40 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert_eq!(out.written, b"ab");
+    }
+
+    #[test]
+    fn interrupted_packet_reports_exact_accepted_prefix() {
+        for accepted in [0, 2] {
+            let mut out = Script {
+                steps: if accepted == 0 {
+                    [Err(io::ErrorKind::WouldBlock.into())].into()
+                } else {
+                    [Ok(accepted), Err(io::ErrorKind::WouldBlock.into())].into()
+                },
+                ..Script::default()
+            };
+            let mut checks = 0;
+            let err = write_bounded_with_wait(
+                &mut out,
+                b"abcdefg",
+                || {
+                    checks += 1;
+                    if checks <= 1 + usize::from(accepted != 0) {
+                        Ok(())
+                    } else {
+                        Err("expired")
+                    }
+                },
+                || Ok(()),
+            )
+            .unwrap_err();
+            assert!(matches!(
+                err,
+                PacketError::Stopped { cause: "expired", written } if written == accepted
+            ));
+            assert_eq!(out.written, b"abcdefg"[..accepted]);
+        }
     }
 
     #[test]

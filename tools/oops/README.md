@@ -35,9 +35,16 @@ completely to the tty. The stale counter counts completed renders discarded
 before submission. The late-write counter counts completed writes that
 crossed their tick boundary. When a nonblocking write would block, the
 frame writer waits briefly for output readiness instead of imposing a
-fixed delay before every retry. The measured write step is submission to
-the tty, not compositor or display timing. Work can be dropped under
-load, and the CLI never queues stale frames to catch up.
+fixed delay before every retry. If a frame exhausts its write budget, the
+player drops it and waits for output readiness without rendering a queue.
+The 30-second deadline, q, resize checks and handled signals still apply.
+If any prefix reached the terminal, the next current frame cancels an
+incomplete terminal sequence, clears the owned alternate screen and
+draws the full image rather than continuing the old diff. A usable
+resize during submission also drops that frame and redraws at the new size.
+The dropped-write count includes these discarded submissions; partial-write
+is the subset that wrote some bytes. Timing is submission to the tty,
+not compositor or display timing.
 
 In one GNU/Linux x86-64 Xfce Terminal run per size (VTE 0.80.1, default
 base, width:height pitch assumed 1:2), the pilot observed:

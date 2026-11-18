@@ -9,6 +9,9 @@ pub const MIN_WIDTH: u16 = 92;
 pub const MIN_HEIGHT: u16 = 45;
 const MAX_COLS: u16 = 220;
 const MAX_ROWS: u16 = 80;
+// Cancel any partial escape sequence, restore our black canvas, then redraw
+// on the already-owned alternate screen. Do not enter it again.
+const RESYNC: &[u8] = b"\x18\x1b[0m\x1b[48;2;0;0;0m\x1b[2J";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Size {
@@ -76,6 +79,7 @@ pub struct Painter {
     old: Vec<Option<u8>>,
     new: Vec<Option<u8>>,
     old_layout: Option<Layout>,
+    needs_resync: bool,
 }
 
 impl Painter {
@@ -108,9 +112,11 @@ impl Painter {
         let trace_time = trace_start.elapsed();
 
         packet.clear();
-        let same_layout = self.old_layout == Some(layout);
+        let same_layout = !self.needs_resync && self.old_layout == Some(layout);
         if !same_layout {
-            if self.old_layout.is_some() {
+            if self.needs_resync {
+                packet.extend_from_slice(RESYNC);
+            } else if self.old_layout.is_some() {
                 packet.extend_from_slice(b"\x1b[2J");
             }
             cup(packet, layout.top - 1, layout.left);
@@ -163,9 +169,14 @@ impl Painter {
         Ok((layout, trace_time))
     }
 
+    pub fn interrupted_submission(&mut self) {
+        self.needs_resync = true;
+    }
+
     pub fn submitted(&mut self, layout: Layout) {
         std::mem::swap(&mut self.old, &mut self.new);
         self.old_layout = Some(layout);
+        self.needs_resync = false;
     }
 }
 
@@ -212,6 +223,32 @@ mod tests {
             .cols,
             220
         );
+    }
+
+    #[test]
+    fn partial_submission_restarts_from_a_clean_canvas_until_committed() {
+        let d = Display {
+            size: Size { cols: 92, rows: 45 },
+            pixels: (0, 0),
+        };
+        let mut current = Painter::default();
+        let mut packet = Vec::new();
+        let (layout, _) = current.paint(0, d, &mut packet).unwrap();
+        current.submitted(layout);
+        current.paint(1, d, &mut packet).unwrap();
+        current.interrupted_submission();
+        // This attempted redraw can itself be skipped, or write only a
+        // prefix. Neither should commit a partial screen to diff history.
+        current.paint(100, d, &mut packet).unwrap();
+        assert!(packet.starts_with(RESYNC));
+
+        let mut fresh = Vec::new();
+        Painter::default().paint(112, d, &mut fresh).unwrap();
+        let (layout, _) = current.paint(112, d, &mut packet).unwrap();
+        assert_eq!(packet.strip_prefix(RESYNC), Some(fresh.as_slice()));
+        current.submitted(layout);
+        current.paint(113, d, &mut packet).unwrap();
+        assert!(!packet.starts_with(RESYNC));
     }
 
     #[test]
