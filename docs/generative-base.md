@@ -9,8 +9,11 @@ movie, recovered frames, a pose guide, a mesh or per-angle table.
   wrist and the folded thumb. The palm and forearm sit farther back
   than the fingertips. This depth is part of the shape, so the sides
   foreshorten without any angle-specific translations. The cut is a
-  plane, not a spherical end.
-  The open-finger gap is real empty space in the model, not black paint.
+  plane, not a spherical end. The two visible folded pads sit at
+  different heights and use shallow cross-sections, so their overlap
+  can read on edge without a painted crease. The inner fold still
+  connects them to the palm. The open-finger gap is real empty space,
+  not black paint.
 - **Base tone:** the same fixed keys light the changing physical
   normals. The cut face's matte material and the gentle floor in
   shadow keep the light from becoming a uniform rim. The front palm bank
@@ -47,5 +50,7 @@ the dark rock still contains weak lines that follow its shape.
 The [study of a hand attributed to Greuze](https://www.metmuseum.org/art/collection/search/785410)
 keeps a short dark under the finger beside a much broader quieter tone.
 Those observations motivate curved sections and small overlap tests,
-not a noise layer, indiscriminate darkening or a new outline.
-No museum image is read by the code.
+not a noise layer, indiscriminate darkening or a new outline. In the
+two views of [Rodin's clenched left hand](https://www.metmuseum.org/art/collection/search/207496),
+distinct pads remain legible where they meet without a drawn seam.
+The gesture is not copied. No museum image is read by the code.

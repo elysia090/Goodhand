@@ -423,9 +423,9 @@ struct Arm {
     palm: Ellipsoid,
     heel: Ellipsoid,
     thumb: Taper,
-    front_fold: Ellipsoid,
-    mid_fold: Ellipsoid,
-    back_fold: Ellipsoid,
+    lower_fold: Ellipsoid,
+    upper_fold: Ellipsoid,
+    inner_fold: Ellipsoid,
     raised_finger: Taper,
     extended_finger: Taper,
 }
@@ -458,15 +458,18 @@ impl Arm {
                 0.067,
                 0.95,
             ),
-            front_fold: Ellipsoid::new(
-                Vec3::new(0.484, -0.066, -0.080),
-                Vec3::new(0.125, 0.098, 0.132),
+            // Two unequal, shallow pads overlap in depth at different
+            // heights instead of merging into one round cross-section.
+            // The inner fold continues into the thumb-side joint.
+            lower_fold: Ellipsoid::new(
+                Vec3::new(0.489, -0.089, -0.059),
+                Vec3::new(0.125, 0.063, 0.117),
             ),
-            mid_fold: Ellipsoid::new(
-                Vec3::new(0.446, -0.079, 0.035),
-                Vec3::new(0.115, 0.089, 0.126),
+            upper_fold: Ellipsoid::new(
+                Vec3::new(0.481, -0.037, 0.049),
+                Vec3::new(0.115, 0.058, 0.108),
             ),
-            back_fold: Ellipsoid::new(
+            inner_fold: Ellipsoid::new(
                 Vec3::new(0.325, -0.080, 0.083),
                 Vec3::new(0.111, 0.099, 0.098),
             ),
@@ -493,9 +496,9 @@ impl Arm {
         let arm = self.forearm.distance(p).max(cut);
         let hand = smooth_join(self.palm.distance(p), self.heel.distance(p), HEEL_BLEND);
         let hand = smooth_join(hand, self.thumb.distance(p), THUMB_BLEND);
-        let hand = smooth_join(hand, self.front_fold.distance(p), HAND_BLEND);
-        let hand = smooth_join(hand, self.mid_fold.distance(p), HAND_BLEND);
-        let hand = smooth_join(hand, self.back_fold.distance(p), HAND_BLEND);
+        let hand = smooth_join(hand, self.lower_fold.distance(p), HAND_BLEND);
+        let hand = smooth_join(hand, self.upper_fold.distance(p), HAND_BLEND);
+        let hand = smooth_join(hand, self.inner_fold.distance(p), HAND_BLEND);
         let hand = smooth_join(hand, self.raised_finger.distance(p), HAND_BLEND);
         let hand = smooth_join(hand, self.extended_finger.distance(p), HAND_BLEND);
         smooth_join(arm, hand, WRIST_BLEND)
@@ -515,9 +518,9 @@ impl Arm {
                 .bounds(heel)
                 .union(self.heel.bounds(heel))
                 .union(self.thumb.bounds(thumb))
-                .union(self.front_fold.bounds(grown(5)))
-                .union(self.mid_fold.bounds(grown(4)))
-                .union(self.back_fold.bounds(grown(3)))
+                .union(self.lower_fold.bounds(grown(5)))
+                .union(self.upper_fold.bounds(grown(4)))
+                .union(self.inner_fold.bounds(grown(3)))
                 .union(self.raised_finger.bounds(grown(2)))
                 .union(self.extended_finger.bounds(grown(1))),
         }
@@ -551,9 +554,9 @@ impl Arm {
             .thumb
             .distance(point)
             .abs()
-            .min(self.front_fold.distance(point).abs())
-            .min(self.mid_fold.distance(point).abs())
-            .min(self.back_fold.distance(point).abs());
+            .min(self.lower_fold.distance(point).abs())
+            .min(self.upper_fold.distance(point).abs())
+            .min(self.inner_fold.distance(point).abs());
         let proximity = 1.0 - smooth_step((palm.abs().max(fold) - 0.013) / 0.026);
         let lower_facing = smooth_step((0.22 - normal.y) / 0.59);
         let end = 1.0 - smooth_step((point.x - 0.52) / 0.12);
@@ -760,6 +763,39 @@ fn smooth_step(t: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folded_pads_stay_joined_to_the_palm() {
+        let arm = Arm::new();
+        assert!(arm.upper_fold.center.y > arm.lower_fold.center.y);
+        for pad in [&arm.upper_fold, &arm.lower_fold] {
+            assert!(pad.radius.y < pad.radius.z);
+        }
+        for fold in [&arm.upper_fold, &arm.lower_fold, &arm.inner_fold] {
+            for i in 0..=8 {
+                let t = f64::from(i) / 8.0;
+                let point = fold.center + (arm.palm.center - fold.center) * t;
+                assert!(arm.distance(point) < 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn foreshortened_fold_shows_a_short_valley_between_receiving_pads() {
+        // One witness at the side of the turn, not a lighting preset.
+        // Each sample must still intersect a continuous physical gesture.
+        let arm = ArmSampler::new(-101.25).unwrap();
+        let band = |y| {
+            [-0.165, -0.155, -0.145]
+                .into_iter()
+                .map(|x| u16::from(arm.sample(x, y).unwrap()))
+                .sum::<u16>()
+        };
+        let upper = band(-0.075);
+        let valley = band(-0.105);
+        let lower = band(-0.125);
+        assert!(upper > valley + 30 && lower > valley + 30);
+    }
 
     #[test]
     fn palm_receiver_is_a_front_bank_with_a_soft_boundary() {
