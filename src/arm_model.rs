@@ -427,7 +427,7 @@ impl Ellipsoid {
 struct Arm {
     forearm: Taper,
     palm: Ellipsoid,
-    heel: Ellipsoid,
+    heel: Taper,
     thumb: Taper,
     lower_fold: Ellipsoid,
     upper_fold: Ellipsoid,
@@ -453,9 +453,14 @@ impl Arm {
                 Vec3::new(0.335, 0.012, -0.048),
                 Vec3::new(0.310, 0.171, 0.160),
             ),
-            heel: Ellipsoid::new(
-                Vec3::new(0.194, 0.050, -0.057),
-                Vec3::new(0.177, 0.147, 0.140),
+            // The wrist leads into the palm on a rising, shallow shoulder.
+            // Keep depth across the joint without putting a round cap on top.
+            heel: Taper::new(
+                Vec3::new(0.020, -0.021, -0.057),
+                Vec3::new(0.276, 0.064, -0.060),
+                0.078,
+                0.111,
+                1.38,
             ),
             thumb: Taper::new(
                 Vec3::new(0.195, 0.054, 0.054),
@@ -538,12 +543,16 @@ impl Arm {
         let heel = thumb + 0.25 * HEEL_BLEND;
         let ellipsoids = [
             &self.palm,
-            &self.heel,
             &self.lower_fold,
             &self.upper_fold,
             &self.inner_fold,
         ];
-        let tapers = [&self.thumb, &self.raised_finger, &self.extended_finger];
+        let tapers = [
+            &self.heel,
+            &self.thumb,
+            &self.raised_finger,
+            &self.extended_finger,
+        ];
         let hand_x_slope = ellipsoids
             .iter()
             .map(|e| e.min_radius * e.inverse_radius.x)
@@ -875,6 +884,23 @@ mod tests {
             }
         }
         assert!(skips > 1000);
+    }
+
+    #[test]
+    fn wrist_rises_into_the_hand_without_a_round_high_bank() {
+        let arm = Arm::new();
+        let bounds = arm.bounds();
+        // The neck starts low, then rises toward the palm. The negative-z
+        // side retains enough depth to join the hand in a grazing view.
+        for point in [
+            Vec3::new(0.040, -0.020, -0.057),
+            Vec3::new(0.140, 0.020, -0.058),
+            Vec3::new(0.220, 0.056, -0.169),
+            Vec3::new(0.255, 0.120, -0.060),
+        ] {
+            assert!(arm.distance(point, bounds) < -HIT);
+        }
+        assert!(arm.distance(Vec3::new(0.090, 0.145, -0.057), bounds) > HIT);
     }
 
     #[test]

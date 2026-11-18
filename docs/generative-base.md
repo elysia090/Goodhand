@@ -10,7 +10,9 @@ movie, recovered frames, a pose guide, a mesh or per-angle table.
   than the fingertips. This depth is part of the shape, so the sides
   foreshorten without any angle-specific translations. The tapered
   forearm's oval section keeps the silhouette narrower end-on without
-  moving the wrist anchor or changing the vertical radius.
+  moving the wrist anchor or changing the vertical radius. A short
+  rising taper leads from the wrist into the palm. Its deeper side
+  keeps the joint substantial without a separate round cap.
   The cut is a plane, not a spherical end. Two visible folded pads sit
   at different heights and use shallow cross-sections, so their overlap
   can read on edge without a painted crease. A recessed inner fold
