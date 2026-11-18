@@ -441,7 +441,7 @@ impl Arm {
                 Vec3::new(0.13, -0.057, -0.067),
                 0.159,
                 0.108,
-                1.31,
+                1.24,
             ),
             palm: Ellipsoid::new(
                 Vec3::new(0.335, 0.012, -0.048),
@@ -763,6 +763,15 @@ fn smooth_step(t: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn foreshortened_forearm_keeps_a_shallow_capped_section() {
+        let arm = ArmSampler::new(90.0).unwrap();
+        // The far edge belongs to the cut arm, below the palm and fingers.
+        // Keep its outer plane present without widening the end into a bulb.
+        assert!(arm.sample(0.245, -0.255).is_some());
+        assert!(arm.sample(0.265, -0.255).is_none());
+    }
 
     #[test]
     fn folded_pads_stay_joined_to_the_palm() {

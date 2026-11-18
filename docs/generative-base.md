@@ -8,9 +8,11 @@ movie, recovered frames, a pose guide, a mesh or per-angle table.
 - **Base shape:** tapered sections and rounded planes join around the
   wrist and the folded thumb. The palm and forearm sit farther back
   than the fingertips. This depth is part of the shape, so the sides
-  foreshorten without any angle-specific translations. The cut is a
-  plane, not a spherical end. The two visible folded pads sit at
-  different heights and use shallow cross-sections, so their overlap
+  foreshorten without any angle-specific translations. The tapered
+  forearm's oval section keeps the silhouette narrower end-on without
+  moving the wrist anchor or changing the vertical radius.
+  The cut is a plane, not a spherical end. Two visible folded pads sit
+  at different heights and use shallow cross-sections, so their overlap
   can read on edge without a painted crease. The inner fold still
   connects them to the palm. The open-finger gap is real empty space,
   not black paint.
