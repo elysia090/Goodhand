@@ -69,6 +69,13 @@ class Session:
             assert self.proc.poll() is None, (self.proc.returncode, bytes(self.raw[-500:]))
             self.pump()
 
+    def partial_next_frame(self, bottom):
+        """Read a prefix of a large diff, but not its closing cursor move."""
+        self.until(bottom)
+        start = self.raw.index(bottom) + len(bottom)
+        self.until(lambda raw: len(raw) >= start + 1024)
+        assert bottom not in self.raw[start:], "already received the next full frame"
+
     def keys_active(self):
         current = termios.tcgetattr(self.slave)
         assert not current[3] & (termios.ECHO | termios.ICANON)
@@ -305,12 +312,12 @@ def tests(binary, *, full, strict):
     # not become the diff baseline.
     with Session([binary, "--measure"], cols=290, rows=97) as s:
         bottom = b"\x1b[97;1H"
-        s.until(bottom)
-        time.sleep(0.42)
+        s.partial_next_frame(bottom)
+        time.sleep(0.48)
         assert s.proc.poll() is None, "a temporary stall ended playback"
         s.until(lambda raw: RESYNC in raw and len(raw.rsplit(RESYNC, 1)[1]) >= 1024)
         assert bottom not in s.raw.rsplit(RESYNC, 1)[1], "already received the full repaint"
-        time.sleep(0.42)
+        time.sleep(0.48)
         assert s.proc.poll() is None, "a second stall ended playback"
         s.until(lambda raw: raw.count(RESYNC) >= 2 and bottom in raw.rsplit(RESYNC, 1)[1])
         os.write(s.master, b"q")
@@ -352,8 +359,8 @@ def tests(binary, *, full, strict):
     # Resume a recovery-waiting player with a key, not writable output.
     # CAN must make even a partially submitted escape harmless before exit.
     with Session([binary], cols=290, rows=97) as s:
-        s.until(b"\x1b[97;1H")
-        time.sleep(0.42)
+        s.partial_next_frame(b"\x1b[97;1H")
+        time.sleep(0.48)
         assert s.proc.poll() is None
         os.write(s.master, b"q")
         raw, err, _ = s.end(0, timeout=1)
@@ -364,13 +371,7 @@ def tests(binary, *, full, strict):
     # Change the viewport while there is an undrained partial packet. The
     # old coordinates must not be resumed, and resize within bounds is not fatal.
     with Session([binary], cols=290, rows=97) as s:
-        bottom = b"\x1b[97;1H"
-        s.until(bottom)
-        first = s.raw.index(bottom) + len(bottom)
-        # Stop reading after an accepted prefix of the first large diff,
-        # rather than guessing when the renderer begins its write.
-        s.until(lambda raw: len(raw) >= first + 1024)
-        assert bottom not in s.raw[first:]
+        s.partial_next_frame(b"\x1b[97;1H")
         s.geometry(213, 85)
         s.until(lambda raw: RESYNC in raw and b"\x1b[85;1H" in raw.rsplit(RESYNC, 1)[1])
         os.write(s.master, b"q")
