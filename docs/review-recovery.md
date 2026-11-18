@@ -29,6 +29,7 @@ outputs separate from source control.
 This workflow was checked against the retained V3 30-second review:
 all **720** decoded frames matched the expected raster, and the recovered
 gray and mask arrays matched the original **288** authored poses exactly.
-The repository does not provide the V3 movie or its recovered values.
-This is a recovery of an existing review, not an acceptance of a new
-artwork, a terminal preview or a formula to recreate V3 from P3-2 alone.
+The repository provides the [recovered V3 snapshot](../artwork/v3/)
+but not the source review movie. The snapshot can be rendered without
+the movie. Recovery is not an acceptance of a new artwork, a terminal
+preview or a formula to recreate V3 from P3-2 alone.

@@ -1,0 +1,31 @@
+{
+  "width": 1000,
+  "height": 640,
+  "fps": 24,
+  "frames": 288,
+  "period_seconds": 12,
+  "grid": {
+    "columns": 200,
+    "rows": 120,
+    "pitch_px": 5,
+    "dot_size_px": [
+      2,
+      2
+    ],
+    "dot_origin_px": [
+      2,
+      42
+    ]
+  },
+  "direction": "reverse",
+  "mask_status": "observed_candidate",
+  "source_kind": "authored",
+  "output_sha256": "036a9ff842efd8f335140d7849b45531ffc884740c043e27f848ece3b55f8daa",
+  "generation": {
+    "parent_observation_sha256": "4faeb14fc8ee683a6fb412265638133d5420c3a68f43f3dd6a800ce157c8bbe1",
+    "method": "Lossless review dot-raster extraction with independent original occupancy",
+    "status": "recovered_review_pixels_not_authoring_recipe",
+    "reference_video_sha256": "883be74cbd608b0530f3c6979d3dca0126010bee63f6c2be66186516a0bca9f8",
+    "parent_occupancy_npz_sha256": "d1d6dccaa2ddaac86dec506db80e42df6faf4c8ff8b4f441b0375a48baddf996"
+  }
+}
