@@ -13,15 +13,20 @@ movie, recovered frames, a pose guide, a mesh or per-angle table.
   The open-finger gap is real empty space in the model, not black paint.
 - **Base tone:** the same fixed keys light the changing physical
   normals. The cut face's matte material and the gentle floor in
-  shadow keep the light from becoming a uniform rim. Assumptions about
-  material were reviewed against the visible reference; this is not a
+  shadow keep the light from becoming a uniform rim. The front palm bank
+  redirects a portion of the existing key toward a broad, wrist-facing
+  plane. This holds a receiving gray next to the thumb without lifting
+  the dark floor, outlining the fingers, or affecting the back of the
+  hand. Its support is expressed in palm coordinates, not screen cells
+  or an angle table. The light response is an authored model, not a
   reconstruction of the reference capture or its original lighting.
 - **Attrs:** a correction must identify a part of the live model,
   what it changes and where it abstains. Keep it separable while it is
   being compared. If the effect is reproducible and useful, put the
   rule in shape or material and retire the correction so it does not
   act a second time. The modeled heel and folded thumb were absorbed
-  on the shape side. `ArmSampler::with_attrs` exposes an opt-in
+  on the shape side; the receiving bank is part of the material.
+  `ArmSampler::with_attrs` exposes an opt-in
   short contact shadow where two modeled surfaces meet. It changes
   reflected light, not the shadow floor or occupancy. It is off by
   default; the separate broad-forearm study is not part of the base.

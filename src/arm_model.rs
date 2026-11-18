@@ -167,7 +167,8 @@ impl ArmSampler {
         let origin = row_origin + self.camera.right * x;
         let point = self.camera.trace(origin, &self.model, self.bounds)?;
         let normal = self.model.normal(point);
-        let (floor, reflected) = self.lights.base_light(point, normal);
+        let receiver = self.model.palm_receiving_weight(point, normal);
+        let (floor, reflected) = self.lights.base_light(point, normal, receiver);
         let direct_scale = if self.attrs.contact_shadow {
             self.model.contact_light_scale(point, normal)
         } else {
@@ -522,6 +523,24 @@ impl Arm {
         }
     }
 
+    fn palm_receiving_weight(&self, point: Vec3, normal: Vec3) -> f64 {
+        // Only the front bank of the palm, above the short folded contact,
+        // receives this light. Use fractions of the palm axes to give the
+        // bank a soft edge rather than making it another piece of geometry.
+        if normal.z <= 0.17 {
+            return 0.0;
+        }
+        let local = (point - self.palm.center).scale_axes(self.palm.inverse_radius);
+        if local.z <= 0.34 {
+            return 0.0;
+        }
+        let x = (local.x - 0.13) / 0.75;
+        let y = (local.y - 0.35) / 0.84;
+        let area = smooth_step(1.0 - x * x - y * y);
+        let front = smooth_step((local.z - 0.34) / 0.44) * smooth_step((normal.z - 0.17) / 0.56);
+        0.64 * area * front
+    }
+
     fn contact_light_scale(&self, point: Vec3, normal: Vec3) -> f64 {
         let palm = smooth_join(
             self.palm.distance(point),
@@ -680,6 +699,7 @@ fn clip_axis(origin: f64, inv: f64, min: f64, max: f64, near: &mut f64, far: &mu
 struct SceneLights {
     key: Vec3,
     fill: Vec3,
+    palm_key: f64,
 }
 
 impl SceneLights {
@@ -694,13 +714,19 @@ impl SceneLights {
             cos_azimuth * cos_elevation,
         );
         let fill = Vec3::new(0.50, 0.42, 0.755);
+        let key = camera.model_direction(key);
+        // This broad material plane faces upward and back toward the wrist.
+        // Its response follows the existing key, not the viewing angle.
+        let palm_normal = Vec3::new(-0.665, 0.29, 0.6883);
+        let palm_key = 0.85 * palm_normal.dot(key).clamp(0.0, 1.0).powf(1.8);
         Self {
-            key: camera.model_direction(key),
+            key,
             fill: camera.model_direction(fill),
+            palm_key,
         }
     }
 
-    fn base_light(&self, point: Vec3, normal: Vec3) -> (f64, f64) {
+    fn base_light(&self, point: Vec3, normal: Vec3, receiver: f64) -> (f64, f64) {
         let key = ((normal.dot(self.key) - 0.034) / 0.966)
             .clamp(0.0, 1.0)
             .powf(1.38);
@@ -711,7 +737,17 @@ impl SceneLights {
         let cap = smooth_step((-point.x - 0.72) / 0.13) * smooth_step((-normal.x - 0.62) / 0.38);
         let material = (1.0 - 0.119 * cap) * (1.0 - 0.091 * palm);
         let floor = 34.3 + 7.0 * smooth_step((normal.y + 0.19) / 0.90);
-        let reflected = 116.43 * key.max((0.012 + 0.12 * palm) * fill) * material;
+        let fill = (0.012 + 0.12 * palm) * fill;
+        let incident = key.max(fill);
+        let reflected = 116.43 * incident * material;
+        if receiver == 0.0 || floor + reflected <= 44.0 {
+            return (floor, reflected);
+        }
+        // Redirect part of the existing key, not the fill or the shadow
+        // floor. Ease in above deep shadow; any contact attr is later.
+        let received = (key + (self.palm_key - key) * receiver).max(fill);
+        let lit = smooth_step((floor + reflected - 44.0) / 31.0);
+        let reflected = reflected + lit * (116.43 * (received - incident) * material);
         (floor, reflected)
     }
 }
@@ -719,4 +755,54 @@ impl SceneLights {
 fn smooth_step(t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn palm_receiver_is_a_front_bank_with_a_soft_boundary() {
+        let arm = Arm::new();
+        let front = Vec3::new(0.0, 0.0, 1.0);
+        let origin = arm.palm.center;
+        let radius = arm.palm.radius;
+        let bank = Vec3::new(0.13, 0.35, 1.0);
+        let strength = |local: Vec3, normal| {
+            arm.palm_receiving_weight(origin + local.scale_axes(radius), normal)
+        };
+        assert!(strength(bank, front) > 0.55);
+        let near = strength(bank + Vec3::new(0.30, 0.0, 0.0), front);
+        let edge = strength(bank + Vec3::new(0.71, 0.0, 0.0), front);
+        assert!(strength(bank, front) > near && near > edge && edge > 0.0);
+        assert_eq!(strength(bank + Vec3::new(0.76, 0.0, 0.0), front), 0.0);
+        assert_eq!(strength(bank + Vec3::new(0.0, -0.85, 0.0), front), 0.0);
+        assert_eq!(strength(bank + Vec3::new(0.0, 0.0, -1.0), front), 0.0);
+        assert_eq!(strength(bank, front * -1.0), 0.0);
+    }
+
+    #[test]
+    fn palm_receiver_changes_key_response_but_never_the_dark_floor() {
+        let wrist_light = SceneLights::new(&Camera::new(0.0));
+        let finger_light = SceneLights::new(&Camera::new(-90.0));
+        assert!(wrist_light.palm_key > finger_light.palm_key);
+        assert!(wrist_light.palm_key > 0.55);
+
+        let point = Vec3::new(0.373, 0.09, 0.1);
+        let front_bank = Vec3::new(-0.18, 0.62, 0.76);
+        let (floor, direct) = wrist_light.base_light(point, front_bank, 0.0);
+        let (received_floor, received) = wrist_light.base_light(point, front_bank, 0.6);
+        assert_eq!(floor, received_floor);
+        assert!(received > direct);
+
+        let (floor, direct) = finger_light.base_light(point, front_bank, 0.0);
+        let (received_floor, received) = finger_light.base_light(point, front_bank, 0.6);
+        assert_eq!(floor, received_floor);
+        assert!(received < direct);
+
+        let dark = Vec3::new(0.0, -1.0, 0.0);
+        let unmodified = wrist_light.base_light(point, dark, 0.0);
+        assert!(unmodified.0 + unmodified.1 < 44.0);
+        assert_eq!(wrist_light.base_light(point, dark, 0.6), unmodified);
+    }
 }
