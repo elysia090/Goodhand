@@ -3,7 +3,9 @@
 A small, dependency-free Rust library for a fixed-grid rotating hand artwork.
 Shape, grayscale tone, timing, and pixel placement have separate contracts.
 Offline Python tools prepare and inspect data; they are not runtime dependencies.
-No original artwork, videos, or production datasets are included.
+The [P3-2 working artwork](artwork/p3-2/) is available as a fixed-grid snapshot
+with a reproducible 22-second preview. Original captures and source imagery
+are not included.
 
 This is a library, not a terminal application. Terminal output, real-device
 performance, and final artistic acceptance remain unverified. See
