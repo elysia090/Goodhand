@@ -6,6 +6,8 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
 import unittest
 from unittest import mock
 
@@ -38,6 +40,140 @@ def observation_fixture(folder):
     source.with_suffix(".json").write_text(json.dumps(metadata))
     return source, gray, mask
 
+
+
+def authored_fixture(folder):
+    source, gray, mask = observation_fixture(folder)
+    gray[:, 20, 10] = 0  # Occupied black, not an absent point.
+    mask[:, 21, 11] = True
+    gray[:, 21, 11] = 231
+    np.savez_compressed(source, authored_gray=gray, mask=mask)
+    path = source.with_suffix(".json")
+    metadata = json.loads(path.read_text())
+    metadata.update(output_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                    source_kind="authored", mask_status="accepted",
+                    generation={"method": "synthetic fixture", "parent_observation_sha256": "a" * 64})
+    path.write_text(json.dumps(metadata))
+    return source, gray, mask
+
+
+class AuthoredPreview(unittest.TestCase):
+    def test_exact_pixels_mask_and_provenance_without_adoption(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, gray, mask = authored_fixture(folder)
+            loaded_gray, loaded_mask, _, _, _ = renderer._SOURCE_IO.load_gray_source(
+                source, kind="authored", profile="reference-v1")
+            np.testing.assert_array_equal(loaded_gray, gray)
+            np.testing.assert_array_equal(loaded_mask, mask)
+            self.assertTrue(loaded_mask[0, 20, 10])
+            self.assertEqual(loaded_gray[0, 20, 10], 0)
+            out = Path(folder) / "preview"
+            report = renderer.render(source, out, [287, 0], kind="authored")
+            expected = np.zeros((640, 1000), dtype=np.uint8)
+            expected[147:149, 57:59] = 231
+            np.testing.assert_array_equal(np.asarray(Image.open(out / "reference-f000.png")), expected)
+            self.assertEqual(report["source_kind"], "authored")
+            self.assertNotIn("source_observation_sha256", report)
+            self.assertEqual(report["source_npz_sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
+            self.assertEqual(report["source_sidecar_sha256"],
+                             hashlib.sha256(source.with_suffix(".json").read_bytes()).hexdigest())
+            self.assertEqual(report["generation_declaration"]["parent_observation_sha256"], "a" * 64)
+            self.assertEqual(report["artifact_adoption"], "not_assessed")
+            self.assertEqual(report["mask_status"], "accepted")
+            self.assertEqual([f["frame"] for f in report["files"]], [287, 0])
+            self.assertEqual([f["declared_yaw"] for f in report["files"]], [1.25, 0])
+            self.assertEqual(set(p.name for p in out.iterdir()),
+                             {"reference-f287.png", "reference-f000.png", "reference-redraw.json"})
+            self.assertEqual(json.loads((out / "reference-redraw.json").read_text()), report)
+            for item in report["files"]:
+                self.assertEqual(item["sha256"], hashlib.sha256((out / item["name"]).read_bytes()).hexdigest())
+
+    def test_role_mismatch_and_unknown_kind_leave_no_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            out = Path(folder) / "preview"
+            source, _, _ = authored_fixture(folder)
+            for call in (lambda: renderer.render(source, out, [0]),
+                         lambda: renderer.load_observations(source),
+                         lambda: renderer.render(source, out, [0], kind="auto")):
+                with self.assertRaises(ValueError):
+                    call()
+                self.assertFalse(out.exists())
+            source, _, _ = observation_fixture(folder)
+            with self.assertRaises(ValueError):
+                renderer.render(source, out, [0], kind="authored")
+            self.assertFalse(out.exists())
+
+    def test_authored_invalid_declaration_or_mixed_arrays_leave_no_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for failure in ("missing generation", "invalid parent", "mixed arrays"):
+                with self.subTest(failure=failure):
+                    source, gray, mask = authored_fixture(folder)
+                    path = source.with_suffix(".json")
+                    metadata = json.loads(path.read_text())
+                    if failure == "missing generation":
+                        del metadata["generation"]
+                    elif failure == "invalid parent":
+                        metadata["generation"]["parent_observation_sha256"] = "not a hash"
+                    else:
+                        np.savez_compressed(source, authored_gray=gray, observed_gray=gray, mask=mask)
+                        metadata["output_sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
+                    path.write_text(json.dumps(metadata))
+                    out = Path(folder) / "preview"
+                    with self.assertRaises(ValueError):
+                        renderer.render(source, out, [0], kind="authored")
+                    self.assertFalse(out.exists())
+
+    def test_authored_snapshot_survives_path_replacement(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, gray, mask = authored_fixture(folder)
+            source_bytes, sidecar_bytes = source.read_bytes(), source.with_suffix(".json").read_bytes()
+            original_read = renderer._SOURCE_IO.read_bounded_snapshot
+            calls = []
+
+            def read_once(path, limit):
+                self.assertNotIn(path, calls)
+                calls.append(path)
+                snapshot = original_read(path, limit)
+                Path(path).write_bytes(b"replaced")
+                return snapshot
+
+            with mock.patch.object(renderer._SOURCE_IO, "read_bounded_snapshot", read_once):
+                out = Path(folder) / "preview"
+                report = renderer.render(source, out, [0], kind="authored")
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(report["source_npz_sha256"], hashlib.sha256(source_bytes).hexdigest())
+            self.assertEqual(report["source_sidecar_sha256"], hashlib.sha256(sidecar_bytes).hexdigest())
+            np.testing.assert_array_equal(np.asarray(Image.open(out / "reference-f000.png")),
+                                          renderer.compose_frame(gray[0], mask[0]))
+
+    def test_cli_observed_default_matches_explicit_role(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, _, _ = observation_fixture(folder)
+            reports = []
+            for name, options in (("default", []), ("explicit", ["--kind", "observed"])):
+                command = [sys.executable, str(Path(renderer.__file__)), str(source),
+                           str(Path(folder) / name), "--frames", "0"] + options
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                reports.append(json.loads(result.stdout))
+            self.assertEqual(reports[0], reports[1])
+            self.assertEqual(reports[0]["source_kind"], "observed")
+            self.assertEqual(reports[0]["source_observation_sha256"], reports[0]["source_npz_sha256"])
+            self.assertNotIn("generation_declaration", reports[0])
+
+    def test_cli_authored_requires_explicit_role(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, _, _ = authored_fixture(folder)
+            out = Path(folder) / "preview"
+            command = [sys.executable, str(Path(renderer.__file__)), str(source), str(out), "--frames", "0"]
+            failed = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertFalse(out.exists())
+            success = subprocess.run(command + ["--kind", "authored"], capture_output=True, text=True)
+            self.assertEqual(success.returncode, 0, success.stderr)
+            self.assertEqual(json.loads(success.stdout)["source_kind"], "authored")
+            repeated = subprocess.run(command + ["--kind", "authored"], capture_output=True, text=True)
+            self.assertNotEqual(repeated.returncode, 0)
 
 class ReferenceRedraw(unittest.TestCase):
     def frame(self):

@@ -1,131 +1,112 @@
-# Goodhand
+# Design
 
-## 完成像
+## Purpose and fixed contract
 
-端末を開いた瞬間に目が止まる、ピースの左手と前腕。腕は文字と余白を食わず、画面全体の構図を締める。回転のどの一瞬もロックのジャケットや PV の一コマ、漫画や版画のように決まる。近くでは点の配置に意図があり、遠くでは一つの強い形として読める。日常の端末で軽快に動くことも表現の一部とする。
+Preserve the hand's pose, silhouette, composition, and intentional asymmetry while
+allowing tone to be authored independently. A strong image at every angle and
+lightweight terminal presentation are separate goals; neither follows from a
+small file or a passing test suite. Reproduce the reference before changing it.
 
-形、ポーズ、輪郭、構図は固定する。まず参照動画の見え方と階調を大筋で再現して基準とし、制作作法を調べた上で色、階調、影、光の細部を詰める。対称や均一を美しさの既定値にせず、意図した偏り、緩急、非対称で絵を強くする。形の誤差を階調で隠したり、計算を速くするために構図を変えたりしない。
-
-## 表現の契約
-
-| 項目 | 契約 |
+| Property | Reference contract |
 | --- | --- |
-| 回転 | 逆回転、1 周 12 秒、24 fps、288 フレーム |
-| 時間と角度 | フレーム f の yaw は (-1.25 × f) mod 360 度。時計から直接フレームを求め、累積誤差を作らない |
-| 参照画像の座標 | 1000 × 640 px。点領域は y = 40 からの 1000 × 600 px |
-| 点の論理格子 | 200 列 × 120 行 |
-| 画像上の点 | ピッチ 5 px、占有 2 × 2 px、原点 (2, 42) px。表示点と形状サンプルの被覆は別の概念 |
-| 配置 | 図の大きさ、表示位置、軸を固定。各フレームを個別に fit しない |
-| 正面 | 人差し指と中指が画面右にある view。yaw 0 / frame 0 |
-| 反対側 | 2 本の指が画面左にある view。yaw 180 / frame 144。画面方向と解剖学的な掌/甲の解釈を混同しない |
-| 中立形状 | 各フレームの画面上の占有と座標。照明・階調を除いた形であり、3D の奥行きや法線ではない |
-| 基礎階調 | 中立形状とは別のデータ。作者の補正を無効にして単独比較できる |
-| 作者階調 | 中間面、短い暗転とその先の明面、必要な接触影を設計する。形状マスクを書き換えない |
+| Loop | Reverse, 24 fps, 288 frames, 12 seconds |
+| Angle | Frame `f`: `(-1.25 * f) mod 360` degrees |
+| Canvas | 1000 × 640 pixels; artwork region begins at y = 40 |
+| Logical grid | 200 columns × 120 rows |
+| Dot placement | Origin (2, 42), pitch 5 pixels, 2 × 2 pixel dots |
+| Front | Frame 0, two extended fingers on screen right |
+| Opposite view | Frame 144, two extended fingers on screen left |
+| Composition | Fixed size, position, and axis; no per-frame fitting |
 
-端末の文字セル、論理点格子、画像の px を混同しない。通常の ANSI 文字描画はフォントとセル縦横比に依存する。画像の 2 × 2 px 点と同じ見た目だと主張するには、対応する出力方式と実端末での比較が必要になる。構図や階調の一致が確認できない代替方式は、互換表示として区別する。
+Screen orientation does not establish anatomical surface ownership. Neutral
+shape means observed 2D occupancy, not recovered depth or normals. Compressed
+video cannot always distinguish black occupied points from background or recover
+original coverage/palette. Preserve uncertainty instead of silently repairing it.
 
-## 動画を土台にする理由
-
-固定された形と回転の可視情報を直接、画面座標の中立形状へ落とす。参照動画と利用可能な静止画は制作・レビューで共通に実見し、見ていない資料を参照済みと扱わない。3D のポーズを再調整して同じ見え方へ戻す工程を必須にしない。3D アセットは検証や補助に使えても、承認された見た目を支配しない。
-
-映像をそのまま配布・再生するだけの構造にはしない。形状、基礎階調、作者階調、時間、端末への配置を分けることで、ポーズを変えずに階調設計と実行時の軽量化を行えるようにする。
-
-### 観測から確定できることと仮定
-
-格子位置と撮影済み角度の可視形は観測できる。圧縮された映像から、境界の部分被覆、元のパレット、黒い面と背景の違いを常に厳密に逆算できるとは限らない。3D の奥行き、法線、隠れた接触面も画面上の占有と同一ではない。
-
-抽出では観測値と確信度を保存し、低確信度の点を黙って埋めたり消したりしない。参照の階調再現と、新しい作画補正を別の工程にする。影を新しく設計する際、形状・法線由来の照明なのか、画面上の作画補正なのかを明示する。根拠のない法線を中立形状へ混ぜない。
-
-## 責務と依存方向
-
-小さな単一 Rust crate を基本とし、必要のない crate や空の階層を作らない。入力から出力までファイル名で追える構造にする。
+## Responsibilities
 
 ```text
-Cargo.toml
-Cargo.lock
-DESIGN.md
-README.md                 実行方法と検証した表示条件
-src/
-  lib.rs                  処理境界の公開
-  frame.rs                格子占有、row/run と不変条件
-  sequence.rs             中立形状の読込みと時間→フレーム
-  tone.rs                 shape と別の occupied gray8 の借用と契約検証
-  surface.rs              論理点と階調を固定 pixel 面へ配置。I/O はしない
-  terminal.rs             予定: 表示面→更新列。I/O はしない
-  main.rs                 予定: 引数、時計、端末入力、write、終了処理
-assets/
-  hand.*                  予定・非同梱: 実行時に必要な軽量データのみ
-tests/
-  sequence.rs             被覆/背景/境界値、不正入力、時間・ループ・データ範囲
-  tone.rs                 GHT8、shape 整合、offset、占有値数、不正入力
-  surface.rs              pixel 配置、背景消去、境界値、buffer 保護
-  terminal.rs             予定: 差分、リサイズ、消去、復元列
-tools/
-  extract_reference.py    映像から観測座標/階調/確信度を抽出
-  gray_source.py          観測/作者の役割、固定profile、入力snapshotを共通検証
-  pack_sequence.py        明示した契約で形状を実行形式へ変換
-  pack_tone.py            形状と全セル照合した階調をGHT8へ変換。作画/採用はしない
-  render_reference.py     保存観測の階調を同じ点格子へ再描画
-  measure.sh              予定: 同じ入力で計算/出力/命令を測定
+Offline observations or authored gray + independent occupancy
+    → validated snapshots → packed shape and occupied-order tone
+    → absolute-time frame selection → fixed pixel surface
+    → future terminal encoding → future application I/O
 ```
 
-```text
-基礎階調 + 作者補正 → 制作時の合成・量子化
-                             ↓
-中立形状 + 検証済み occupied gray8
-                 ↓
-          時刻→フレーム選択
-                 ↓
-      論理点と階調→固定 pixel 面
-                 ↓
-      配置と表示方式→更新符号化
-                 ↓
-              更新バイト列
-```
+Use one small Rust crate. Video decoders, NumPy, and Pillow remain offline tools.
+`gray_source.py` validates role-separated input snapshots; `pack_sequence.py`
+encodes occupancy; `pack_tone.py` checks exact mask agreement before tone export;
+`render_reference.py` previews either declared role without changing its values.
+No terminal backend or application clock/I/O loop is implemented yet.
 
-動画デコーダ、画像処理ライブラリ、抽出用 Python は実行バイナリの依存にしない。圧縮形式や公開 API はデータ分布と正解フレームを検証してから必要なものだけ決める。先に独自形式を固定し、見た目をその形式へ合わせない。
+- `ShapeFrame` represents occupancy; a tone frame represents gray8 in occupied
+  row/run order. Keep these meanings distinct even if storage changes.
+- `Sequence::frame_index_at(elapsed)` uses absolute time, not accumulated deltas.
+  The reference profile has a 12-second period; other valid sequences use their
+  own frame count and fps.
+- Tone composition and quantization belong offline. Keep baseline and authored
+  versions independently comparable. Runtime relighting is not required.
+- Tone validation checks dimensions, fps, frame count, and occupied value counts.
+  Matching dimensions/counts alone cannot establish provenance; retain hashes.
+- `write_surface` changes no shape. In gray8 output, occupied black and background
+  are visually identical. Never reconstruct occupancy from this surface.
+- A future terminal encoder should reuse caller buffers and perform no I/O.
+  Resizing invalidates differential state; clearing and exit restoration belong
+  to an explicit terminal/application contract.
+- Pixels, logical points, and terminal character cells are not interchangeable.
+  Preserve aspect ratio and specify cropping/scaling/suspension policy explicitly.
+  ANSI/Braille compatibility output requires its own visual evaluation.
 
-### データと API の意味
+## Binary contracts
 
-- `ShapeFrame` は格子占有、`ToneSequence` の frame が返す gray8 slice はその占有順の階調。黒い面と背景を区別する。占有と階調を単一の格納形式へまとめる場合も、この二つの意味を区別できる encoding を使う。
-- `Sequence::frame_index_at(elapsed)` は参照プロファイルの 12 秒周期の整数フレーム番号を返す。停止、再開、ループ境界でも時計と同期する。
-- 基礎階調と作者補正の合成・量子化は制作時に行い、基準と作者階調つきを別々に比較できる状態を保持する。固定ループの実行時に、同じ照明計算を繰り返すことを必須にしない。
-- `ToneSequence::from_bytes(bytes, shape)` は寸法・fps・frame 数・各 frame の占有数を検証する。shape 由来の同一性と採用状態は別の provenance で確認する。
-- 制作入力の観測値は `observed_gray`、作者値は `authored_gray` と命名し、読込み時の役割を明示する。実行形式への変換は曲線や補修を行わず、独立 mask と shape の全セル一致を確認する。入力と出力の hash、申告された作成方法、採用状態を payload とは別に記録する。mask の受入れを作者階調の採用と取り違えない。
-- `write_surface(shape_frame, gray, raster_spec, &mut pixels)` は pixel 面を生成し、形状を変更しない。pixel 配置と端末 cell 配置を別の契約にする。gray8 表示面では占有黒0と背景0は同じ値になるため、この面から占有を復元しない。占有が必要な後段は `ShapeFrame` または等価の独立情報を使う。
-- 予定する端末 backend の `encode(previous, current, viewport, &mut bytes)` は I/O をせず、呼出し側のバッファを再利用する。
-- 小さな端末へ対応する時も縦横比を守る。欠けた図を表示するか、縮小するか、表示を休止するかは明示した表示ポリシーに従う。無断で毎フレーム別の配置へ変更しない。
-- リサイズや表示方式の変更は差分状態を無効化する。旧描画の消去、全体の再描画、失敗後の復元列を定義し、実際の I/O と終了処理はバイナリが引き受ける。
+`GHSH` version 1 stores shape. Its little-endian 16-byte header is magic `GHSH`,
+version u16, width u16, height u16, fps u16, frame_count u32. Next come
+`frame_count + 1` u32 offsets relative to the payload. Each frame has `height`
+rows, each with a u8 run count and `(start: u8, length: u8)` pairs.
 
-### 点化・階調の順序
+Width/height are 1..255, fps 1..1000, frame_count 1..4096; assets are at most
+64 MiB. Offsets start at zero, are nondecreasing and in bounds, and end at payload
+length. Runs are nonempty, ordered, in bounds, and separated by at least one
+unoccupied point. Packers merge adjacent runs. Trailing frame bytes are invalid.
 
-抽出段階と表示段階を分ける。動画上の 2 × 2 px の観測値を、形状を生成する面積平均と取り違えない。抽出値を元のパレットとみなさない。
+`GHT8` version 1 uses the same header layout with magic `GHT8`, offset table, and
+occupied-order gray8 payload. Every frame's value count must match the shape's
+run-length sum. Zero is a valid occupied tone. Provenance and acceptance stay
+outside the payload.
 
-制作段階では占有を先に確定し、その占有を変えずに基礎階調と作者補正を合成・量子化する。実行時は確定済み gray8 を占有順に配置する。clamp、量子化、丸め、背景への写像の順序と各境界値は、採用する階調プロファイルと一緒に試験する。面積被覆を使う表示では、背景を平均に含むかを明記する。互換出力のための追加量子化は作画側と別に扱う。
+Validation is O(asset bytes) without allocation; lookup reads two offsets;
+borrowed row iteration is O(rows + runs). Expanding an N-cell mask writes N cells.
+The pixel writer clears its required canvas and writes occupied footprints.
+These are costs of the chosen implementation, not universal lower bounds.
 
-## 品質保証のゲート
+## Quality gates
 
-各工程で視覚と数値の両方を確認する。数値だけで美術的な合格を主張しない。すべて通過するまで 0.0.1 を完成扱いにしない。
+Do not treat version 0.0.1 as finished until all gates pass:
 
-1. **形と構図。** 中立形状を全周で示し、輪郭・位置・大きさ・点座標を比較する。低確信度の境界は別表示する。文字と余白を含む端末全画面の構図も確認する。形を描き直した、個別 fit で大きさが揺れる、配置資料なしで独自配置を決めた場合は戻る。
-2. **基準階調と大きな明暗。** 参照動画の明暗を大筋で再現し、正面と反対側で点の輝度・面の配置を照合する。その上で遠目の強さ、各角度の明暗面の主従、暗転と反対側の明面を詰める。基準再現が未確認のまま独自の面へ置換した、斑点や全体 gain で弱い面をごまかした場合は戻る。
-3. **中間面と境界。** 拡大して各点が面をつなぐ、境界を切る、影の中に明るさを残す役割を持つかを見る。均等な明暗配分や左右対称を目的にしない。内部面が潰れた、無意味な孤立島が増えた、点の増加だけで改善を主張した場合は戻る。
-4. **全周と小角度の変化。** 静止一覧と 24 fps ループで、360 度の各瞬間が一枚として決まるかを確認する。境界の入退場と内部の無意味なちらつきを分け、末尾→先頭も測る。実観測は 1.25 度刻み。1 度指定の試験では選択/補間の仮定を別記し、未観測の面を観測済みに見せない。静止だけ良い、ループに継ぎ目がある場合は戻る。
-5. **端末と必要な仕事。** 同じ構図の実用端末で、近距離/遠距離、リサイズ、停止/再開、終了時の復元を確認する。配布量、常駐メモリ、計算、転送、画面更新を分離測定し、24 fps の予算と条件付き下限に照合する。正しさや絵を損なった、平均時間だけで軽快さを主張した場合は戻る。
-6. **独立レビュー。** 制作・実装担当とは別の目で、形/全周の絵、フォルダ/API/依存方向、導入と終了、必要最低限の仕事を点検する。不要な仕組み、曖昧な責務、未検証の保証が残れば該当工程へ戻る。
+1. **Shape/composition:** compare the full cycle, boundaries, coordinates, and
+   uncertainty; include actual terminal text and margins. Reject per-frame drift.
+2. **Baseline/large planes:** reproduce the reference before authorship; judge
+   hierarchy and distant readability, not merely global gain or contrast.
+3. **Intermediate planes/boundaries:** inspect native size before enlargement.
+   Reject collapsed internal separation and meaningless isolated patches.
+4. **Motion:** compare key views, all-angle atlas, and 24 fps playback including
+   last-to-first. Separate silhouette entry/exit from internal flicker. State
+   interpolation assumptions for angles not present in the 1.25-degree samples.
+5. **Terminal/runtime:** test near/far viewing, resize, pause/resume, exit restore,
+   bandwidth, memory, long frames, and missed deadlines on a real device.
+6. **Independent review:** check artwork, API boundaries, dependencies, recovery,
+   and necessary work. Numerical success cannot waive visual failure.
 
-輪郭の一致、絵としての強さ、実用品としての軽快さは別々に判定する。技術的な観測と美的な判断を両方記録し、実行・視覚評価していない部分は通過にしない。
+## Performance evidence
 
-## 必要な仕事と条件付き下限
+The reference grid has 24,000 cells; at 24 fps the budget is about 41.67 ms/frame.
+A dense byte field costs 6,912,000 bytes per loop; a separate one-bit occupancy
+field costs 864,000 bytes. Those are representation costs, not information-theory
+minima. Compare row runs, shared references, changed-cell encoding, and on-demand
+expansion before assuming full-grid work is necessary.
 
-(N = 200 × 120 = 24000) 点/フレーム、(F = 288) フレーム、(K) は変化した点数、(B) は出力バイト数とする。1 フレームの時間予算は (1000 / 24 = 41.67) ms。
-
-- 全点を 1 byte ずつ持つ表現なら 24000 byte/フレーム、全周で 6912000 byte。占有を独立した 1 bit で持つだけなら全周 864000 byte。これは特定の表現の容量であり、必要情報量の普遍的下限ではない。
-- 全格子走査は 576000 点判定/秒。この方式を選ぶならその走査が必要だが、行区間、変化集合、参照共有で走査そのものを消せるかを比較する。
-- 一定周期の固定像なので、実行時の 3D ラスタや全画面の法線/深度バッファを当然の仕事にしない。事前計算、圧縮データの直接利用、オンデマンド展開を、編集可能性・メモリ・表示品質と一緒に比較する。
-- 独立した (K) 個の変化を通知する符号化を採用するなら、その情報を生成し出力する費用が必要。ただし座標や同色区間の共有でバイト数は変わる。ANSI の色切替、カーソル、UTF-8 も別に数える。
-- 実測した転送速度 (R) による (B/R) は、その条件での転送時間の見積り。一般的な下限と呼ばない。write の受入れ時間と画面に描かれる時間も分ける。
-- 圧縮により容量が減っても、展開、分岐、キャッシュ、更新バイト列の費用が増えることがある。最小ファイルと最速実行を同じ指標にしない。
-
-意味論と候補表現を明示した上で、必要な演算・読取り/書込み・転送量を手計算する。CPU/OS/端末、build profile、target、入力 hash、表示方式を記録し、起動/展開/フレーム選択/階調/符号化/write を分離測定する。平均だけでなく長いフレームと deadline miss も測る。ネイティブと Wasm は比較可能な範囲だけ比較し、生成命令と境界費用に照合する。Rust だから速い、測った候補の中で速いから真の下限、という前提を置かない。
-
+Measure startup, validation, expansion, frame selection, tone placement, encoding,
+write acceptance, and visible presentation separately. Record input hashes,
+hardware/OS/terminal, build, target, and protocol. Count cursor/color/UTF-8 costs;
+measured bytes/throughput estimates only apply under those conditions. Smaller
+compression may increase decode and cache costs. Do not infer speed from Rust,
+Wasm build success, average timing alone, or comparison with only one candidate.

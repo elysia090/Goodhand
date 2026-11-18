@@ -1,97 +1,125 @@
-# 階調と点の設計
+# Tone and preview contract
 
-## 変えないもの
+## Input roles
 
-ピースの形、輪郭、構図、点の位置と大きさ、回転の時間は固定する。中立形状は画面上の占有であって、法線や奥行きではない。必要な内部境界と安定したランドマークは別の形状手掛かりとして保持し、シルエットの距離場から作った陰影を実際の面の証拠にしない。
+Tone packing and previewing consume an NPZ with a same-stem JSON sidecar.
+The fixed `reference-v1` profile is 288 frames of 120 × 200 cells, reverse
+24 fps / 12 seconds, with the pixel placement defined in [DESIGN](../DESIGN.md).
 
-## 参照階調を再現してから改良する
+- Observed: `observed_gray:uint8[288,120,200]` and independent `mask:bool` of the same shape.
+- Authored: `authored_gray:uint8[288,120,200]` and the same mask contract.
+- Optional `threshold_ambiguity:bool` is validated, never used to repair occupancy.
+- Opposite-role arrays, ambiguous `gray`, extra diagnostic arrays, mixed roles,
+  implicit dtype conversion, and clamping are rejected.
 
-最初に参照動画の見え方と階調を大筋で再現する。正面は人差し指と中指が画面右の view（yaw 0 / frame 0）、反対側は yaw 180 / frame 144 として、画面方向と角度を先に照合する。掌や甲、接触面の解釈は、実見した資料が支える範囲に限る。制作・レビュー担当は共通の参照画像を実際に開き、参照できた資料と未確認資料を区別する。
+The sidecar requires NPZ `output_sha256`, the full reference profile,
+`direction:"reverse"`, and `mask_status:"observed_candidate"` or `"accepted"`.
+Authored input additionally requires `source_kind:"authored"`, and `generation`
+with a nonempty `method` and lowercase 64-hex `parent_observation_sha256`.
+Observed input may omit `source_kind` for compatibility or declare `observed`,
+but cannot include an authored generation declaration.
 
-再現では点の位置・占有と、点の輝度を別に比較する。圧縮映像の 2 × 2 px の最大値で点を描くと平均値より僅かに明るくなるため、観測方法を固定し、RGB/gray の変換差も報告する。黒背景を含む全画面 MAE だけで精度を強調せず、占有 dot 内の MAE、最大誤差、境界の曖昧点を調べる。元パレットの完全回収や 3D 面の確定と混同しない。
+These labels and parent hashes are declarations, not verified ancestry. Never
+replace observed values with authored results under the observed key. Mask
+acceptance does not imply artwork adoption.
 
-この再現を通過してから、制作作法の調査を根拠に小さく比較して改良する。基準再現と、独立したトーン場の設計実験を同じ進捗として扱わない。
+## Validation and resource bounds
 
-## 変更前に問題と解決案を定義する
+`gray_source.py` reads one bounded snapshot each of NPZ and JSON; validation and
+hashing use those same bytes. Limits are 64 MiB for NPZ, 1 MiB for JSON, and
+10,240 bytes per NPY header. Member headers, dtype, shape, and expanded length
+are checked before array loading. Pickle, duplicates, unknown arrays, and trailing
+data are rejected.
 
-改変する前に、次の5項目を一つの仮説として記述する。「何となく弱い」「contrastの数値が小さい」だけを問題にしない。
+The container permits NumPy's stored/deflated members, a comment-free single-disk
+ZIP32 central directory with 2..3 entries and at most 4 KiB. NumPy local-header
+ZIP64 extras remain supported. This is a bounded profile, not a general ZIP
+importer or a guarantee of whole-process memory usage or execution time.
 
-1. **観測した問題。** 角度と画面領域、区別できなくなる二つの面または境界、回転中に途切れる関係を指定する。原寸での読みにくさと拡大での点の状態を分ける。
-2. **原因仮説。** 中間階調の圧縮、境界幅、位置ずれなど、観測と区別した説明を置く。画像で確認できない3D接触や遮蔽を原因と断定しない。
-3. **解決案。** どの値・領域・可視区間をどう変えるかを一案に絞り、その操作が失われた区別を戻す理由を述べる。
-4. **保護条件。** 形、構図、点位置・サイズ、隣接中間面、対象外角度など、変更しないものを明記する。
-5. **検証と戻り条件。** 同条件の基準/試作を原寸、拡大、回転、測定で比べる。仮説を支持した結果と未確認を分け、差が弱い、別の面が潰れる、時間の出入りが浮く場合は採用しない。
+## PNG preview
 
-変更後の印象に合わせて原因を後付けしない。診断用の変更位置overlayと無印の作品比較を分け、動画圧縮の誤差が修正量を上回る場合はlossless比較または元配列を検証する。
+```sh
+python3 tools/render_reference.py observations.npz observed-preview --frames 0 144
+python3 tools/render_reference.py authored.npz authored-preview --kind authored --frames 0 144
+```
 
-## 目標トーン場を先に作る
+Python callers use `render(source, destination, frames, kind="authored")`.
+Omitting `kind` preserves the observed default; `load_observations(source)` stays
+observed-only. Both roles use the same strict `reference-v1` snapshot validator.
 
-点の増減を先に考えるのでなく、暗・中間・明の面と、その短い境界を設計する。対称や均一を目的にしない。画面の意図した偏り、明暗の緩急、非対称を保ち、等面積・同じ強さの明暗へ機械的に均すことを避ける。各点は面をつなぐ、境界を切る、影の中に明るさを残す、のいずれかの役割を持つ。暗転とその反対側の明面を別の変数として扱い、全体の gain だけで回転を演出しない。
+The tool places saved gray at fixed dot coordinates without curves, relighting,
+interpolation, geometry reconstruction, or adoption. Background samples are ignored.
+Occupied black remains valid in the source mask, although the black PNG cannot
+distinguish it from background. Retain the independent mask downstream.
 
-比較する仮説は以下のとおり。これらは実験案であって、資料の手法をそのまま採用する宣言ではない。
+Use a new destination directory; existing directories, even empty ones, are
+rejected. Selected frames retain caller order and use `reference-fNNN.png` for
+both roles, alongside `reference-redraw.json`. Duplicate/out-of-range frames are
+rejected. Omitting CLI `--frames` renders all 288 frames. Validation occurs before
+directory creation. An I/O failure may leave partial output; retry in a new folder.
 
-- 二値と三階調を、平均点輝度を揃えて比較する。中間面が掌と指の分離に寄与するかを見る。
-- 全体 gain と、暗転後の明面を独立に設計する方式を比較する。
-- 固定位置の輝度変調を基準とし、必要がある時だけ固定 rank の入れ子と比較する。毎フレーム独立の乱数で点を選び直さない。
-- 改良段階では、物理照明への忠実さだけでなく、大きな明暗面と各角度の可読性で評価する。
+Reports record `source_kind`, `source_npz_sha256`, `source_sidecar_sha256`, mask
+status, declared reference hash/sample method, fixed placement/timing, and PNG
+hashes, frame numbers, and declared yaw. Observed reports retain the legacy
+`source_observation_sha256` key. Authored reports instead include
+`generation_declaration`, explicitly not verified ancestry. `artifact_adoption`
+is always `not_assessed`, even for an accepted mask.
 
-## 制作値を実行形式へ渡す
-
-制作側で合成・量子化を終えた値だけを、`pack_tone.py` で occupied順のGHT8へ変換する。この変換で曲線、gamma、補間、mask補修、採用判定を追加しない。
-
-入力はNPZと同名のJSON sidecar。`--profile reference-v1` は表現の契約で定めた1000×640px、200×120点、逆回転12秒/24fps/288frame、pitch5px/2×2px/origin(2,42)を照合する。NPZの役割は必須の `--kind` で選ぶ。
-
-- `observed`: `observed_gray:uint8[288,120,200]` と `mask:bool` 同shape。
-- `authored`: `authored_gray:uint8[288,120,200]` と `mask:bool` 同shape。
-- 任意の `threshold_ambiguity:bool` 同shapeは検証するが、点の補修には使わない。役割が逆のkey、曖昧な `gray`、追加の診断配列は受け取らない。floatのclampやuint8/boolへの暗黙変換もしない。
-
-コンテナはNumPyの通常のstored/deflate形式に限定する。コメントなし・単一disk・2〜3member・ZIP32中央indexを要求し、indexは4KiB以下とする。これは汎用ZIP取込みではなく、固定profile用の資源制約。各配列のlocal headerにあるZIP64 extraは許容する。byte/index/配列の上限は検証するが、プロセス全体の厳密なRSSや実行時間の保証ではない。
-
-sidecarにはNPZの `output_sha256`、寸法・時間・格子のprofile、`direction:"reverse"`、`mask_status:"observed_candidate"` または `"accepted"` が必要。作者入力ではさらに `source_kind:"authored"`、`generation.method`、`generation.parent_observation_sha256` を宣言する。作者値を `observed_gray` に上書きしない。
+## Runtime export
 
 ```sh
 python3 tools/pack_tone.py authored.npz shape.ghs authored-export \
   --kind authored --profile reference-v1
 ```
 
-NPZ、sidecar、shapeは上限付きの一回snapshotを使う。NPZは許可memberのheader/dtype/shape/展開量を配列確保前に確認し、pickle・重複member・余剰データを拒否する。独立maskはGHSHと全セル一致を求め、C-orderの占有位置を既存row/run順に対応付ける。背景値を占有値に混ぜず、黒0も有効な占有値として保存する。
+Packing requires explicit role/profile, compares the independent mask to GHSH at
+every cell, and exports occupied-order `tone.ght` with `tone.json`. Black zero is
+preserved. NPZ, sidecar, and shape use bounded snapshots; reports retain input and
+output hashes, occupancy counts, and declarations. No curve, repair, or adoption
+is added. Existing output directories are rejected.
 
-未作成の専用出力dirへ `tone.ght` と `tone.json` を排他的に保存する。既存dirは空でも再利用せず、失敗時の部分出力を別runへ混ぜない。由来記録にはNPZ/sidecar/shape/出力のSHAと占有数を残す。役割名・親入力SHA・制作方法は申告として記録し、親bytesが与えられない時は検証済みと呼ばない。出力の `artifact_adoption` は常に `not_assessed` とし、作品の採用記録は出力SHAに対して別に管理する。
+## Authoring and review
 
-## 一次資料から使う原則と境界
+Preserve pose, silhouette, composition, point coordinates, and timing. Reproduce
+the reference before authorship. Video samples are not recovered palettes or
+normals; image correspondence is not material tracking.
 
-- [Weighted Voronoi Stippling](https://www.cs.ubc.ca/labs/imager/tr/2002/secord2002b/secord.2002b.pdf) は目標トーンを密度で近似する。ただし自由に移動する黒点/白紙の方式であり、固定格子/黒背景の明点へ Lloyd 緩和や密度の符号をそのまま移さない。
-- [Real-Time Hatching](https://hhoppe.com/hatching.pdf) は階調・解像度間で描線集合を入れ子にし、線の持続性を保つ。ここでは持続性の原則を使い、曲面 UV や曲率方向の線を必要条件にしない。
-- [Real-Time Animated Stippling](https://www.cs.mun.ca/~omeruvia/research/publications/realTimeStippling.pdf) は個々の点の時間的一貫性を重視する。ただし表面に固定した可変密度/可変サイズの点であり、画面固定格子への直接の解ではない。
-- [Scalar Spatiotemporal Blue Noise Masks](https://arxiv.org/html/2112.09629v1) は空間と時間のノイズを同時に評価する。TAA などの時間積分に良いという結果を、24 fps の直視作品で最良という結論に変えない。採用するなら独立 2D 乱数や固定 rank と同条件で比較する。
+Before changing values, state the angle/region, lost visual distinction, separate
+causal hypothesis, proposed operation, protected conditions, and refutation
+criteria. Compare native-size baseline and candidate before enlargement or metrics.
+Do not assign anatomy or contact ownership to an ambiguous shadow by assumption.
 
-## 判定方法
+Design large dark/intermediate/light planes before detail. Favor intentional
+asymmetry and hierarchy rather than uniform contrast or equal areas. A point
+should join a plane, separate a boundary, or retain light within a shadow. Compare
+local structural hypotheses against a global-contrast control. Review broad
+plane relationships, local folds and contact, then selective finish in separate
+passes. Keep each comparison baseline and apply the next change only after
+reviewing the current pass.
 
-### 形と境界
+Measure occupancy separately from apparent contour loss, and occupied-dot errors
+rather than only background-dominated whole-image error. Connected regions and
+boundary widths are diagnostics, not artistic objectives. Distinguish silhouette
+entry/exit from internal flicker. Compare native views, enlargements, all-angle
+atlases, 24 fps playback including the seam, and real-terminal composition.
+Keep observed, authored, and uncertain tracks separate. Occlusion/reappearance
+must not be bridged without evidence; smoothness alone cannot prove attachment.
 
-占有、bbox、重心、点座標は中立形状と差分ゼロを目標にする。それだけでは暗部の背景同化による「見かけの欠け」を検出できないため、輪郭帯の輝度と読み取れない弧の長さも調べる。
+## Research directions, not adopted algorithms
 
-### 面と点
+These references motivate comparisons, not claims of implementation or direct
+transfer to fixed bright points on black:
 
-物体占有内の暗・中間・明の面積率、連結成分数、最大成分の割合、小さな孤立島の割合、境界長/面積を調べる。目標は数値だけの最大化ではなく、斑点状のノイズと意図した大きな面を区別すること。参照再現には輝度誤差を使うが、改良後の作品品質をその RMSE だけで判断しない。
-
-### 動き
-
-前後フレームで共通して占有される領域だけを取り出し、平均輝度差、大幅変化点の割合、点灯継続長を測る。輪郭の入退場と無意味な点滅を分ける。時間周波数とループ末尾→先頭も調べ、意図した面の切替を一律に平滑化して消さない。
-
-### 視覚
-
-同じ角度の原寸静止、拡大、全周一覧、24 fps ループ、実用端末の文字・余白を含む全画面を比較する。離れて一つの強い像として読めるか、近くで点の役割が見えるか、360 度の各瞬間が一枚として決まるかを別々に判定する。統計が良いだけでは採用しない。
-
-## 回転中に関係が読めること
-
-ちらつきが小さいだけでは、明暗の因果が伝わるとは限らない。「この暗部は何を区切るか」「その先の明面はどこへ続くか」を、可視区間内で追えることを確認する。全体コントラストを上げる対照実験と、境界の所属・位置を守る局所実験を分ける。
-
-境界 track は `observed`（実画像の位置・明暗・見える区間）、`authored`（作画位置・幅・輝度・補間）、`uncertain`（対応不明）を別記する。隠れた区間を無理につなぎ、反対側の別の暗線を同じ面として扱わない。物体の 3D 対応を復元したとは呼ばない。
-
-- [Keyframe-Based Tracking for Rotoscoping and Animation](https://grail.cs.washington.edu/projects/rotoscoping/roto.pdf) のように、少数の観測キーと曲線の連続変形を分けて考える。画像平面の曲線法線は 3D 面法線ではない。
-- [Stroke Surfaces](https://purehost.bath.ac.uk/ws/portalfiles/portal/560911/CSBU-2003-01.pdf) の時空間領域の考え方から、領域の消失・再出現・分裂・合流を区別する。属性の時間平均で絵をぼかすことは採用しない。
-- [GuiltyGear Xrd の制作資料](https://media.gdcvault.com/gdc2015/presentations/Motomura_Junya_GuiltyGearXrd.pdf) のように、物理だけでなく明暗分布と内部線が伝える面を意図的に制御する。ただし存在しない mesh/normal を前提にしない。
-
-最初は内部境界を一本だけ追う。目印と境界の距離、両側の輝度差とその符号、横断幅、可視区間を測り、同位相の静止と 24 fps ループで比較する。滑らかでも境界が形から浮く、ぼかしで境界が消える、理由なく別の領域へ飛ぶ場合は不合格。観測できない区間を補間で埋めたことを、測定の成功にしない。
-
+- [Weighted Voronoi Stippling](https://www.cs.ubc.ca/labs/imager/tr/2002/secord2002b/secord.2002b.pdf):
+  density approximates tone, but moving dark points on white is a different representation.
+- [Real-Time Hatching](https://hhoppe.com/hatching.pdf) and
+  [Real-Time Animated Stippling](https://www.cs.mun.ca/~omeruvia/research/publications/realTimeStippling.pdf):
+  investigate persistence without assuming recovered surface coordinates.
+- [Scalar Spatiotemporal Blue Noise Masks](https://arxiv.org/html/2112.09629v1):
+  temporal-integration benefits do not prove the best direct-view 24 fps result.
+- [Keyframe-Based Tracking for Rotoscoping and Animation](https://grail.cs.washington.edu/projects/rotoscoping/roto.pdf)
+  and [Stroke Surfaces](https://purehost.bath.ac.uk/ws/portalfiles/portal/560911/CSBU-2003-01.pdf):
+  distinguish observed keys, interpolation, disappearance, splitting, and merging.
+  An image-plane curve normal is not a surface normal.
+- [GuiltyGear Xrd production presentation](https://media.gdcvault.com/gdc2015/presentations/Motomura_Junya_GuiltyGearXrd.pdf):
+  investigate intentional plane/line design without assuming an unavailable mesh.
