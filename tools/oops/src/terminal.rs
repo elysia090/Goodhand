@@ -277,9 +277,44 @@ struct Screen {
 struct InlineState {
     display: Display,
     rows: InlineRows,
-    /// False when only part of a frame has been written, or while probing
-    /// reflow. The cursor may not be on the reserved line below the art.
+    /// False while the output cursor may not be on the reserved lower line.
     anchored: bool,
+    /// When all owned rows are still known to be hard breaks, this bounds
+    /// the last column touched on each row of the committed drawing.
+    hard_right: Option<u16>,
+    /// Complete ownership is established; after a successful full redraw
+    /// (which re-hardens these rows) a width-only fast path can resume.
+    whole_area_visible: bool,
+    /// A viewport transition was seen during a probe; even a return to the
+    /// original size cannot then reuse the previous absolute erase range.
+    recheck: bool,
+}
+
+impl InlineState {
+    fn can_follow_width(self, display: Display) -> bool {
+        self.anchored
+            && !self.recheck
+            && self.display.size.rows == display.size.rows
+            && self
+                .hard_right
+                .is_some_and(|right| right <= display.size.cols)
+    }
+}
+
+struct DrawingSurface {
+    display: Display,
+    inline: Option<InlineRows>,
+    redraw: bool,
+}
+
+impl DrawingSurface {
+    fn inline(display: Display, rows: InlineRows, redraw: bool) -> Self {
+        Self {
+            display,
+            inline: Some(rows),
+            redraw,
+        }
+    }
 }
 
 enum FrameStop {
@@ -416,10 +451,10 @@ impl Screen {
             ));
         }
         let reserved = reservation(display.size);
-        self.control(
-            &b"\r\n".repeat(usize::from(reserved)),
-            Instant::now() + CONTROL_BUDGET,
-        )?;
+        // EL must use the default background to trim, not fill, rows.
+        let mut allocation = Vec::from(b"\x1b[0m");
+        allocation.extend_from_slice(&b"\r\n".repeat(usize::from(reserved)));
+        self.control(&allocation, Instant::now() + CONTROL_BUDGET)?;
         let below = self.cursor()?;
         let expected =
             (u32::from(before.row) + u32::from(reserved)).min(u32::from(display.size.rows));
@@ -439,6 +474,9 @@ impl Screen {
             display,
             rows,
             anchored: true,
+            hard_right: Some(0),
+            whole_area_visible: true,
+            recheck: false,
         }));
         // DEC save/restore has one slot in VTE. We borrow it only in a
         // foreground shell, after the allocation's scrolling has finished.
@@ -449,26 +487,35 @@ impl Screen {
         self.control(&packet, Instant::now() + CONTROL_BUDGET)
     }
 
-    fn drawing_surface(&self, display: Display) -> io::Result<(Display, Option<InlineRows>)> {
+    fn drawing_surface(&self, display: Display) -> io::Result<DrawingSurface> {
         let Some(state) = self.inline.get() else {
-            return Ok((display, None));
+            return Ok(DrawingSurface {
+                display,
+                inline: None,
+                redraw: false,
+            });
         };
-        if state.display.size == display.size {
-            // Pixel pitch can change without relocating either row.
+        if !state.recheck && state.display.size == display.size {
+            // Pixel pitch may change without relocating either marker.
             self.inline.set(Some(InlineState { display, ..state }));
-            return Ok((display, Some(state.rows)));
+            return Ok(DrawingSurface::inline(display, state.rows, false));
         }
         if !state.anchored {
             return Err(io::Error::other(
                 "resized during a partial inline draw; stopped to preserve shell output",
             ));
         }
+        if state.can_follow_width(display) {
+            if let Some(surface) = self.follow_width(state, display)? {
+                return Ok(surface);
+            }
+        }
         let display = self.settle(display)?;
         if !display.size.fits() {
             return Err(io::Error::other(size_error(display.size)));
         }
-        if state.display == display {
-            return Ok((display, Some(state.rows)));
+        if !state.recheck && state.display == display {
+            return Ok(DrawingSurface::inline(display, state.rows, false));
         }
         // Both cursor reports are requested in one packet, so normally
         // they describe the same reflow snapshot. Do not erase if a new
@@ -505,8 +552,61 @@ impl Screen {
             display: actual,
             rows,
             anchored: true,
+            // The visible area is mapped by both reports. If the upper
+            // marker might be clipped at row 1, do not infer its true span.
+            hard_right: None,
+            whole_area_visible: top.row > 1,
+            recheck: false,
         }));
-        Ok((actual, Some(rows)))
+        Ok(DrawingSurface::inline(actual, rows, true))
+    }
+
+    fn follow_width(
+        &self,
+        state: InlineState,
+        display: Display,
+    ) -> io::Result<Option<DrawingSurface>> {
+        // No cursor save/restore or erasure here. A same-height width change
+        // cannot split our hard rows if the complete prior drawing still fits.
+        // Earlier shell output may reflow, so measure the live lower row.
+        let below = self.cursor()?;
+        let actual = self.terminal.display()?;
+        if display.size != actual.size {
+            if !state.can_follow_width(actual) {
+                self.inline.set(Some(InlineState {
+                    recheck: true,
+                    hard_right: None,
+                    whole_area_visible: false,
+                    ..state
+                }));
+            }
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        let count = state.rows.below - state.rows.top;
+        if below.col != 1 || below.row <= count || below.row > actual.size.rows {
+            // The upper marker may have moved off-screen. Use the full
+            // measured pair rather than guessing whether top was clipped.
+            return Ok(None);
+        }
+        let rows = InlineRows {
+            top: below.row - count,
+            below: below.row,
+        };
+        self.inline.set(Some(InlineState {
+            display: actual,
+            rows,
+            ..state
+        }));
+        Ok(Some(DrawingSurface::inline(actual, rows, true)))
+    }
+
+    fn note_submitted(&self, right: u16) {
+        if let Some(state) = self.inline.get() {
+            self.inline.set(Some(InlineState {
+                hard_right: state.whole_area_visible.then_some(right),
+                ..state
+            }));
+        }
     }
 
     fn mark_anchor(&self, anchored: bool) {
@@ -627,7 +727,7 @@ impl Screen {
         };
         let display = self.terminal.display()?;
         let mut packet = Vec::from(RESET);
-        if display.size == state.display.size {
+        if !state.recheck && display.size == state.display.size {
             clear_rows(&mut packet, state.rows);
             cup(&mut packet, state.rows.top, 1);
             match self.cleanup_write(&packet, Some(display.size)) {
@@ -718,12 +818,19 @@ fn play(
         if attempted != Some(slot.phase) {
             attempted = Some(slot.phase);
             let begin_paint = Instant::now();
-            let (observed, inline) = match screen.drawing_surface(observed) {
+            let DrawingSurface {
+                display: observed,
+                inline,
+                redraw,
+            } = match screen.drawing_surface(observed) {
                 Ok(surface) => surface,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
                 Err(error) => return Err(error),
             };
             let layout = Layout::for_surface(observed, settings, painter.frame_size(), inline);
+            if redraw {
+                painter.interrupted_submission();
+            }
             let trace = painter.paint(slot.phase.tick, layout, &mut packet)?;
             let encode = begin_paint.elapsed().saturating_sub(trace);
             stats.record_trace();
@@ -755,7 +862,8 @@ fn play(
                             write,
                         },
                     );
-                    painter.submitted(layout);
+                    let right = painter.submitted(layout);
+                    screen.note_submitted(right);
                 }
                 FrameResult::EndOfRun => return Ok(()),
                 FrameResult::Dropped {

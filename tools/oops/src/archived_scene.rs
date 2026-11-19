@@ -135,7 +135,7 @@ fn tile_origin(spec: RasterSpec, axis: usize) -> f64 {
 fn occupied_framing(shape: Sequence<'_>) -> Option<Framing> {
     // Use full source sampling tiles, not tone, with one fixed margin
     // throughout the turn. Run ends and bottom rows are exclusive.
-    const MARGIN_TILES: f64 = 5.0;
+    const MARGIN_TILES: f64 = 3.0;
     let (mut left, mut top) = (shape.width(), shape.height());
     let (mut right, mut bottom) = (0, 0);
     for pose in 0..shape.frame_count() {
@@ -226,7 +226,7 @@ mod tests {
         entries[POSES as usize - 1] = late;
         let data = asset(b"GHSH", &entries);
         let framing = occupied_framing(Sequence::from_bytes(&data).unwrap()).unwrap();
-        assert_eq!(framing.size, (780.0, 575.0));
+        assert_eq!(framing.size, (760.0, 555.0));
         assert_eq!(framing.center, (405.0, 307.5));
     }
 

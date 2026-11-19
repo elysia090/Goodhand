@@ -25,7 +25,7 @@ By default the review build holds its 288 native poses on the 24 Hz clock
 for three and two ticks alternately, in the reviewed direction. Occupancy and gray remain separate:
 black can be occupied. Nothing is fetched or reconstructed during
 playback. A single envelope around all occupied samples in the full turn, plus
-five sample tiles on each side, is fit onto the terminal grid at a
+three sample tiles on each side, is fit onto the terminal grid at a
 uniform scale. The framing and center are fixed across poses. This
 keeps the art larger without cropping at the default zoom. At small
 sizes, some detail is necessarily lost to the coarser cell grid.
@@ -71,12 +71,15 @@ font, frame submission, or screen refresh.
   positive y moves down. Shifts are independent of zoom, stay proportional
   on resize, and can crop at the drawing grid's edges. The header and
   footer do not move with the picture.
-- `--brightness PERCENT` applies a linear gain of 0 through 200 to
-  each occupied gray code, with integer rounding (ties up) and clipping
-  to 255. The default, 100, is unchanged. At 0, every dot is black;
-  the dots still have occupancy. This does not change terminal
-  brightness, background, or text, and does not restore clipped
-  highlights.
+- The embedded review uses a neutral tone adjustment for readability
+  next to ordinary shell text. It lifts lower and middle gray values
+  and rolls the adjustment off toward white. It leaves native review
+  data, occupied black, and the shell’s text and palette unchanged.
+- `--brightness PERCENT` applies an additional gain of 0 through 200 to
+  each displayed occupied gray code, with integer rounding (ties up)
+  and clipping to 255. The default, 100, adds no gain. At 0, every dot
+  is black but still occupied. This does not change terminal brightness,
+  background, or text, and does not restore clipped highlights.
 - No config is required or searched for. Copy
   [`oops.example.conf`](oops.example.conf), adjust the settings, and
   pass the path with `--config PATH`. The file is UTF-8, at most 8 KiB,
@@ -105,6 +108,9 @@ the prompt below the command and erases only its reserved rows. Island
 leaves the separate buffer so the original shell is shown again. Inline
 asks VTE for its two cursor positions, not existing screen text. As a
 window or font resize settles, it re-fits the visible reserved area.
+Ordinary width-only changes can redraw during the drag when the earlier
+drawing is known not to wrap. Larger changes can cause VTE to reflow
+rows before oops can redraw; it verifies the reserved positions first.
 Normal terminal scrolling can move older commands or previously drawn
 cells into scrollback; oops does not erase scrollback. If a resize
 interrupts a partial inline write or the anchors cannot be verified,

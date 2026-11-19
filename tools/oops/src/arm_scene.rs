@@ -82,7 +82,9 @@ pub fn reservation(size: Size) -> u16 {
 pub fn clear_rows(packet: &mut Vec<u8>, rows: InlineRows) {
     for row in rows.top..rows.below {
         cup(packet, row, 1);
-        packet.extend_from_slice(b"\x1b[2K");
+        // At column 1, EL clears this whole owned row. Unlike EL2,
+        // VTE does not fill the row to full width with blank cells.
+        packet.extend_from_slice(b"\x1b[K");
     }
 }
 
@@ -172,6 +174,7 @@ pub struct Painter {
     new: Vec<Option<u8>>,
     old_layout: Option<Layout>,
     needs_resync: bool,
+    drawn_right: u16,
 }
 
 impl Painter {
@@ -183,6 +186,7 @@ impl Painter {
             new: Vec::new(),
             old_layout: None,
             needs_resync: false,
+            drawn_right: 0,
         })
     }
 
@@ -216,11 +220,14 @@ impl Painter {
                 }
             }
         }
-        // Adjust art gray only, never the presence of a dot or the UI colors.
-        if settings.brightness != crate::settings::Brightness::default() {
-            for level in self.new.iter_mut().flatten() {
-                *level = settings.brightness.apply(*level);
-            }
+        // Calibrate only the displayed art. Occupancy, archive values, and
+        // existing shell foreground/background never take this transfer.
+        for level in self.new.iter_mut().flatten() {
+            #[cfg(goodhand_embedded_playback)]
+            let gray = review_display_gray(*level);
+            #[cfg(not(goodhand_embedded_playback))]
+            let gray = *level;
+            *level = settings.brightness.apply(gray);
         }
         let trace_time = trace_start.elapsed();
 
@@ -240,8 +247,22 @@ impl Painter {
         }
 
         let mut active = None;
+        let mut right = 0;
+        let inline = layout.inline.is_some();
         let cols = usize::from(layout.cols);
         for (row, pixels) in self.new.chunks_exact(cols).enumerate() {
+            let limit = if inline {
+                pixels
+                    .iter()
+                    .rposition(Option::is_some)
+                    .map_or(0, |col| col + 1)
+            } else {
+                cols
+            };
+            if limit > 0 {
+                right = right.max(layout.left + limit as u16 - 1);
+            }
+            let y = layout.top + row as u16;
             let changed = |col| {
                 let old = if same_layout {
                     self.old[row * cols + col]
@@ -251,12 +272,12 @@ impl Painter {
                 old != pixels[col]
             };
             let mut col = 0;
-            while col < cols {
+            while col < limit {
                 if !changed(col) {
                     col += 1;
                     continue;
                 }
-                cup(packet, layout.top + row as u16, layout.left + col as u16);
+                cup(packet, y, layout.left + col as u16);
                 loop {
                     match pixels[col] {
                         Some(level) => {
@@ -269,12 +290,29 @@ impl Painter {
                         None => packet.push(b' '),
                     }
                     col += 1;
-                    if col == cols || !(changed(col) || col + 1 < cols && changed(col + 1)) {
+                    if col == limit || !(changed(col) || col + 1 < limit && changed(col + 1)) {
                         break;
                     }
                 }
             }
+            if inline
+                && same_layout
+                && self.old[row * cols + limit..(row + 1) * cols]
+                    .iter()
+                    .any(Option::is_some)
+            {
+                // Trim old inactive tail instead of printing spaces.
+                // Otherwise VTE can wrap an invisible historical tail.
+                let erase_at = if limit == 0 {
+                    1
+                } else {
+                    layout.left + limit as u16
+                };
+                cup(packet, y, erase_at);
+                packet.extend_from_slice(b"\x1b[K");
+            }
         }
+        self.drawn_right = right;
 
         if layout.inline.is_some() {
             packet.extend_from_slice(b"\x1b[0m");
@@ -293,15 +331,30 @@ impl Painter {
         self.needs_resync = true;
     }
 
-    pub fn submitted(&mut self, layout: Layout) {
+    pub fn submitted(&mut self, layout: Layout) -> u16 {
         std::mem::swap(&mut self.old, &mut self.new);
         self.old_layout = Some(layout);
         self.needs_resync = false;
+        self.drawn_right
     }
 }
 
 pub fn cup(out: &mut Vec<u8>, row: u16, col: u16) {
     write!(out, "\x1b[{row};{col}H").expect("Vec writes cannot fail");
+}
+
+#[cfg(any(test, goodhand_embedded_playback))]
+fn review_display_gray(gray: u8) -> u8 {
+    // Match the 125% terminal preview chosen against plain shell white.
+    // Above 144, progressively withdraw that added quarter toward white.
+    // f(v) = v + .25 * (v - 255 * ((v - 144)_+ / 111)^2), rounded once.
+    // The shoulder remains increasing; black and white stay fixed.
+    const KNEE: u32 = 144;
+    const SPAN_SQUARED: u32 = (255 - KNEE) * (255 - KNEE);
+    let value = u32::from(gray);
+    let high = value.saturating_sub(KNEE);
+    let added = (value * SPAN_SQUARED - 255 * high * high + 2 * SPAN_SQUARED) / (4 * SPAN_SQUARED);
+    (value + added) as u8
 }
 
 fn gray(out: &mut Vec<u8>, gray: u8) {
@@ -311,6 +364,21 @@ fn gray(out: &mut Vec<u8>, gray: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_display_gain_preserves_endpoints_and_does_not_clip() {
+        assert_eq!(review_display_gray(0), 0);
+        assert_eq!(review_display_gray(255), 255);
+        for gray in 0..u8::MAX {
+            let adjusted = review_display_gray(gray);
+            assert!(adjusted >= gray);
+            assert!(adjusted <= review_display_gray(gray + 1));
+            assert!(adjusted.saturating_sub(gray) <= 39);
+        }
+        for (source, displayed) in [(13, 16), (40, 50), (82, 103), (139, 174), (161, 200)] {
+            assert_eq!(review_display_gray(source), displayed);
+        }
+    }
 
     #[test]
     fn centered_layout_uses_known_cell_pitch_or_explicit_fallback() {

@@ -44,7 +44,7 @@ Usage: oops [--check | --measure] [--config PATH] [OPTIONS]\n\
   --direction DIRECTION reverse (default) or forward, same opening pose.\n\
   --offset-x PERCENT    -50 to 50 of drawing width; positive moves right.\n\
   --offset-y PERCENT    -50 to 50 of drawing height; positive moves down.\n\
-  --brightness PERCENT  0–200; 100 leaves original gray unchanged.\n\
+  --brightness PERCENT  0–200; 100 adds no gain to the terminal tone.\n\
   --help, -h            Print this help.\n\
   --version, -V         Print the version.\n\
 \n\

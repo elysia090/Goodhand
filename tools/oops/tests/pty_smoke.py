@@ -501,7 +501,7 @@ def test_inline(binary):
         s.geometry(145, 50)
         s.cursor_reply(3, 50)
         s.cursor_reply(4, 7)
-        s.until(lambda raw: b"\x1b[7;1H\x1b[2K" in raw[first:] and
+        s.until(lambda raw: b"\x1b[7;1H\x1b[K" in raw[first:] and
                 "•".encode() in raw[first:])
         s.until(lambda raw: raw[first:].count(s.bottom) >= 3)
         os.write(s.master, b"q")
@@ -530,8 +530,58 @@ def test_inline(binary):
         s.cursor_reply(4, 50)  # Reversed markers do not establish ownership.
         raw, err, _ = s.end(1)
         assert b"cannot locate reserved inline rows" in err
-        assert b"\x1b[2K" not in raw and b"\x1b[2J" not in raw
+        assert b"\x1b[K" not in raw and b"\x1b[2J" not in raw
     print("PASS inline only repaints the reserved rows, rejects a mid-line launch, and clears on q")
+
+
+def test_width_follow(binary):
+    with Session([binary], cols=165, rows=55) as s:
+        s.cursor_reply(1, 55)
+        s.cursor_reply(2, 55)
+        s.until(lambda raw: raw.count(s.bottom) >= 3)
+        # Width-only safe expansion. Other shell output can reflow by a
+        # row, so absolute old positions are not safe even in this case.
+        s.geometry(170, 55)
+        s.cursor_reply(3, 54)
+        start = s.raw.rfind(CURSOR_QUERY)
+        s.until(lambda raw: b"\x1b[13;1H\x1b[K" in raw[start:])
+        s.until(lambda raw: raw[start:].count(b"\x1b[54;1H") >= 2)
+        assert raw_position_safe(s.raw[start:], bottom=54, top=13)
+
+        # A second resize races another inert probe. It does not change
+        # the live cursor or erase against the obsolete geometry.
+        s.geometry(172, 55)
+        s.until(lambda raw: raw.count(CURSOR_QUERY) >= 4)
+        end = s.raw.rfind(CURSOR_QUERY)
+        s.geometry(174, 55)
+        s.cursor_reply(4, 54)
+        s.until(lambda raw: raw.count(CURSOR_QUERY) >= 5)
+        assert b"\x1b[K" not in s.raw[end:]
+        s.cursor_reply(5, 53)
+        s.until(lambda raw: b"\x1b[12;1H\x1b[K" in raw[end:])
+        os.write(s.master, b"q")
+        raw, err, _ = s.end(0)
+        assert not err and b"\x1b8" not in raw
+        assert raw.endswith(b"\x1b[12;1H")
+        assert raw_position_safe(raw[end:], bottom=54, top=12)
+    print("PASS width follows one inert cursor report; a racing report cannot erase stale rows")
+
+
+def raw_position_safe(raw, *, bottom, top):
+    return all(top <= int(row) <= bottom for row in re.findall(rb"\x1b\[(\d+);\d+H", raw))
+
+
+def test_inline_row_tails(binary):
+    with Session([binary, "--duration", "12"], cols=116, rows=41) as s:
+        s.cursor_reply(1, 41)
+        s.cursor_reply(2, 41)
+        # No full clear on startup. EL here means a live row got shorter.
+        s.until(b"\x1b[K")
+        assert b"\x1b[2K" not in s.raw
+        os.write(s.master, b"q")
+        raw, err, _ = s.end(0)
+        assert not err and raw_position_safe(raw, bottom=41, top=11)
+    print("PASS inline shortening uses row-scoped EL, not historical trailing spaces")
 
 
 def test_inline_shell(binary):
@@ -854,6 +904,8 @@ def tests(binary, *, full, strict):
     print("PASS interactive Bash returns after q and keyboard Ctrl-C with original stty")
 
     test_inline(binary)
+    test_width_follow(binary)
+    test_inline_row_tails(binary)
     test_inline_shell(binary)
     test_default_loop(binary)
     if full:
