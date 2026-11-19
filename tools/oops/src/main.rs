@@ -1,13 +1,16 @@
 mod arm_scene;
 mod measurement;
 mod playback;
+mod settings;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
 mod terminal;
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
 mod terminal_keys;
 
+use settings::{Overrides, Settings, read_config};
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 const HELP: &str = "oops 0.0.1\n\
@@ -17,15 +20,22 @@ Pilot target: a foreground Xfce/VTE-compatible Linux terminal,\n\
 with UTF-8, true color, and at least 92 columns by 45 rows.\n\
 Run from the normal shell screen. Press q or Ctrl-C to exit.\n\
 \n\
-Usage: oops [--check | --measure | --help | --version]\n\
+Usage: oops [--check | --measure] [--config PATH] [--zoom PERCENT] [--cell-aspect ASPECT]\n\
+       oops --help | --version\n\
 \n\
-  --check    Check terminal preconditions and display geometry.\n\
-  --measure  Play and print process-side timing after restoring the shell.\n\
-  --help     Print this help.\n\
-  --version  Print the version.\n";
+  --check               Check terminal preconditions and display geometry.\n\
+  --measure             Play and print process timing after restoring the shell.\n\
+  --config PATH         Read optional display settings from this file only.\n\
+  --zoom PERCENT        50–200; 100 fits the model frame, above 100 may crop.\n\
+  --cell-aspect ASPECT  auto (default) or cell width/height from 0.30 to 0.85.\n\
+  --help, -h            Print this help.\n\
+  --version, -V         Print the version.\n\
+\n\
+Command-line display settings override the corresponding config values.\n";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Mode {
+    #[default]
     Play,
     Check,
     Measure,
@@ -33,62 +43,141 @@ enum Mode {
     Version,
 }
 
-fn mode(mut args: impl Iterator<Item = OsString>) -> Result<Mode, ()> {
-    let parsed = match args.next() {
-        None => Mode::Play,
-        Some(arg) if arg == "--check" => Mode::Check,
-        Some(arg) if arg == "--measure" => Mode::Measure,
-        Some(arg) if arg == "--help" || arg == "-h" => Mode::Help,
-        Some(arg) if arg == "--version" || arg == "-V" => Mode::Version,
-        Some(_) => return Err(()),
-    };
-    args.next().is_none().then_some(parsed).ok_or(())
+#[derive(Debug, Default, PartialEq)]
+struct Options {
+    mode: Mode,
+    config: Option<PathBuf>,
+    overrides: Overrides,
 }
 
-fn main() -> ExitCode {
-    match mode(std::env::args_os().skip(1)) {
-        Ok(Mode::Help) => {
-            print!("{HELP}");
-            ExitCode::SUCCESS
+fn value(args: &mut impl Iterator<Item = OsString>, option: &str) -> Result<OsString, String> {
+    args.next()
+        .filter(|value| !value.is_empty() && !value.as_encoded_bytes().starts_with(b"--"))
+        .ok_or_else(|| format!("{option}: expected a value"))
+}
+
+fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Options, String> {
+    let mut options = Options::default();
+    while let Some(arg) = args.next() {
+        let mode = match arg.to_str() {
+            Some("--check") => Mode::Check,
+            Some("--measure") => Mode::Measure,
+            Some("--help" | "-h") => Mode::Help,
+            Some("--version" | "-V") => Mode::Version,
+            Some("--config") => {
+                if options.config.is_some() {
+                    return Err("--config: specified more than once".into());
+                }
+                options.config = Some(value(&mut args, "--config")?.into());
+                continue;
+            }
+            Some(option @ ("--zoom" | "--cell-aspect")) => {
+                let input = value(&mut args, option)?;
+                let input = input
+                    .to_str()
+                    .ok_or_else(|| format!("{option}: expected UTF-8 text"))?;
+                let result = if option == "--zoom" {
+                    options.overrides.set_zoom(input)
+                } else {
+                    options.overrides.set_cell_aspect(input)
+                };
+                result.map_err(|reason| format!("{option}: {reason}"))?;
+                continue;
+            }
+            _ => return Err(format!("unknown option {arg:?}; see --help")),
+        };
+        if options.mode != Mode::Play {
+            return Err("choose only one of --check, --measure, --help, or --version".into());
         }
-        Ok(Mode::Version) => {
-            println!("oops {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
-        }
-        Ok(Mode::Check) => run(true, false),
-        Ok(Mode::Measure) => run(false, true),
-        Ok(Mode::Play) => run(false, false),
-        Err(()) => {
-            eprintln!("oops: expected no arguments, --check, --measure, --help, or --version");
-            ExitCode::from(2)
-        }
+        options.mode = mode;
+    }
+    if matches!(options.mode, Mode::Help | Mode::Version)
+        && (options.config.is_some() || options.overrides != Overrides::default())
+    {
+        return Err("--help and --version must be used on their own".into());
+    }
+    Ok(options)
+}
+
+impl Options {
+    fn settings(self) -> Result<Settings, String> {
+        let file = self.config.as_deref().map(read_config).transpose()?;
+        let defaults = file.unwrap_or_default().apply(Settings::default());
+        Ok(self.overrides.apply(defaults))
     }
 }
 
+fn main() -> ExitCode {
+    let options = match parse_args(std::env::args_os().skip(1)) {
+        Ok(options) => options,
+        Err(reason) => return error_exit(&reason),
+    };
+    match options.mode {
+        Mode::Help => {
+            print!("{HELP}");
+            ExitCode::SUCCESS
+        }
+        Mode::Version => {
+            println!("oops {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
+        mode => match options.settings() {
+            Ok(settings) => run(mode, settings),
+            Err(reason) => error_exit(&reason),
+        },
+    }
+}
+
+fn error_exit(reason: &str) -> ExitCode {
+    eprintln!("oops: {reason}");
+    ExitCode::from(2)
+}
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
-fn run(check_only: bool, measure: bool) -> ExitCode {
-    terminal::run(check_only, measure).into()
+fn run(mode: Mode, settings: Settings) -> ExitCode {
+    terminal::run(mode == Mode::Check, mode == Mode::Measure, settings).into()
 }
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")))]
-fn run(_check_only: bool, _measure: bool) -> ExitCode {
-    eprintln!("oops: terminal playback is only implemented on GNU/Linux x86-64");
-    ExitCode::from(2)
+fn run(_mode: Mode, _settings: Settings) -> ExitCode {
+    error_exit("terminal playback is only implemented on GNU/Linux x86-64")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Mode, mode};
-    use std::ffi::OsString;
+    use super::*;
+
+    fn args(values: &[&str]) -> Result<Options, String> {
+        parse_args(values.iter().map(OsString::from))
+    }
 
     #[test]
-    fn limited_plain_argument_surface() {
-        let args = |args: &[&str]| mode(args.iter().map(OsString::from));
-        assert_eq!(args(&[]), Ok(Mode::Play));
-        assert_eq!(args(&["--check"]), Ok(Mode::Check));
-        assert_eq!(args(&["--help"]), Ok(Mode::Help));
-        assert_eq!(args(&["-V"]), Ok(Mode::Version));
-        assert_eq!(args(&["--help", "--check"]), Err(()));
-        assert_eq!(args(&["--duration=10"]), Err(()));
+    fn modes_and_display_flags_accept_either_order() {
+        assert_eq!(args(&[]).unwrap().mode, Mode::Play);
+        assert_eq!(args(&["--check"]).unwrap().mode, Mode::Check);
+        assert_eq!(args(&["--help"]).unwrap().mode, Mode::Help);
+        assert_eq!(args(&["-V"]).unwrap().mode, Mode::Version);
+        assert_eq!(
+            args(&["--check", "--zoom", "90", "--cell-aspect", "auto"]),
+            args(&["--cell-aspect", "auto", "--zoom", "90", "--check"])
+        );
+    }
+
+    #[test]
+    fn ambiguous_or_invalid_flags_fail() {
+        for args in [
+            &["--help", "--check"][..],
+            &["--duration=10"],
+            &["--version", "--config", "oops.conf"],
+            &["--config", "one", "--config", "two"],
+            &["--config", "--zoom", "125"],
+            &["--zoom", "120", "--zoom", "100"],
+            &["--zoom", "0"],
+            &["--zoom"],
+            &["--cell-aspect", "NaN"],
+            &["--cell-aspect", "auto", "--cell-aspect", "0.4"],
+        ] {
+            assert!(self::args(args).is_err(), "{args:?}");
+        }
     }
 }

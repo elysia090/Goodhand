@@ -9,6 +9,7 @@ import select
 import signal
 import struct
 import subprocess
+import tempfile
 import termios
 import time
 from pathlib import Path
@@ -32,9 +33,9 @@ for name in ("NO_COLOR", "TMUX", "STY", "SSH_TTY", "BASH_ENV", "ENV"):
 
 
 class Session:
-    def __init__(self, command, *, cols=183, rows=86, env=None, stderr_in_tty=False):
+    def __init__(self, command, *, cols=183, rows=86, pixels=(0, 0), env=None, stderr_in_tty=False):
         self.master, self.slave = pty.openpty()
-        self.geometry(cols, rows)
+        self.geometry(cols, rows, pixels)
         self.attrs = termios.tcgetattr(self.slave)
         self.flags = fcntl.fcntl(self.slave, fcntl.F_GETFL)
         self.raw = bytearray()
@@ -53,8 +54,8 @@ class Session:
         os.setsid()
         fcntl.ioctl(0, termios.TIOCSCTTY, 0)
 
-    def geometry(self, cols, rows):
-        fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    def geometry(self, cols, rows, pixels=(0, 0)):
+        fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, *pixels))
 
     def pump(self, timeout=0.025):
         if select.select([self.master], [], [], timeout)[0]:
@@ -217,11 +218,109 @@ def test_resize_wire_expectations():
             assert actual is result, raw
 
 
+def test_config(binary):
+    def check(args, expected, pixels=(0, 0), env=None):
+        with Session([binary, "--check", *args], cols=165, rows=55,
+                     pixels=pixels, env=env) as s:
+            out, err, _ = s.end(0)
+            assert not err and expected in out, (out, err)
+            assert b"\x1b" not in out
+
+    # The example itself should work, with no ambient config loaded.
+    example = Path(__file__).resolve().parent.parent / "oops.example.conf"
+    check([], b"model grid 164 by 49, cell aspect 0.5000 (assumed), zoom 100%")
+    check(["--config", example], b"cell aspect 0.5000 (assumed), zoom 100%")
+    check([], b"model grid 164 by 45, cell aspect 0.4667 (tty pixels), zoom 100%", (1155, 825))
+    check([], b"cell aspect 0.5000 (assumed)", (1155, 0))
+
+    with tempfile.TemporaryDirectory() as directory:
+        config = Path(directory) / "display settings.conf"
+        config.write_text("zoom=125\ncell_aspect=0.60\n", encoding="utf-8")
+        default_location = Path(directory) / "oops"
+        default_location.mkdir()
+        (default_location / "config").write_text("zoom=150\n", encoding="utf-8")
+        check([], b"zoom 100%", env={"XDG_CONFIG_HOME": directory})
+        check(["--config", config], b"model grid 144 by 52, cell aspect 0.6000 (configured), zoom 125%")
+        check(
+            ["--zoom", "85", "--config", config],
+            b"cell aspect 0.6000 (configured), zoom 85%",
+        )
+        check(
+            ["--cell-aspect", "auto", "--config", config],
+            b"cell aspect 0.4667 (tty pixels), zoom 125%",
+            (1155, 825),
+        )
+        check(
+            ["--config", config, "--cell-aspect", "0.75", "--zoom", "200"],
+            b"cell aspect 0.7500 (configured), zoom 200%",
+            (1155, 825),
+        )
+        for source, expected in [
+            (None, b"No such file"),
+            (b"zoom=125\nunknown=1\n", b'line 2: unknown key "unknown"'),
+            (b"zoom=125\nzoom=150\n", b"line 2: zoom: specified more than once"),
+            (b"zoom=201\n", b"line 1: zoom: expected"),
+            (b"cell_aspect=NaN\n", b"line 1: cell_aspect: expected"),
+            (b"\xff", b"file must be UTF-8"),
+            (b"#" * 8193, b"file exceeds 8192 bytes"),
+        ]:
+            if source is not None:
+                config.write_bytes(source)
+            else:
+                config.unlink()
+            # A CLI override does not conceal a malformed config file.
+            with Session([binary, "--config", config, "--zoom", "100"]) as s:
+                out, err, _ = s.end(2)
+                assert not out and b"display settings.conf" in err
+                assert expected in err and b"\x1b" not in err, err
+
+        fifo = Path(directory) / "not-a-config"
+        os.mkfifo(fifo)
+        with Session([binary, "--config", fifo]) as s:
+            out, err, _ = s.end(2, timeout=1)
+            assert not out and b"expected a regular file" in err, err
+    print("PASS config example, per-setting CLI precedence, pitch source, and startup failures")
+
+
+def test_zoom_resize(binary):
+    for zoom in (50, 200):
+        with Session([binary, "--measure", "--zoom", str(zoom)], cols=165, rows=55,
+                     pixels=(1155, 825)) as s:
+            bottom = b"\x1b[55;1H"
+            clear = b"\x1b[2J"
+            s.until(bottom)
+
+            # A real TIOCSWINSZ can change the pixel pitch at the same cell
+            # count. The auto projection must repaint, even without a new CUP
+            # at the bottom of the screen to use as a viewport marker.
+            s.geometry(165, 55, (1485, 825))
+            s.until(lambda raw: raw.count(clear) >= 2 and bottom in raw.rsplit(clear, 1)[1])
+
+            # Then resize in both directions while the same zoom stays in effect.
+            for index, (cols, rows, pixels) in enumerate((
+                (220, 93, (1980, 1395)),
+                (112, 53, (1008, 795)),
+            ), 3):
+                s.geometry(cols, rows, pixels)
+                marker = f"\x1b[{rows};1H".encode()
+                s.until(lambda raw: raw.count(clear) >= index and marker in raw.rsplit(clear, 1)[1])
+                frame = bytes(s.raw.rsplit(clear, 1)[1])
+                positions = re.findall(rb"\x1b\[(\d+);(\d+)H", frame)
+                assert positions and all(1 <= int(y) <= rows and 1 <= int(x) <= cols
+                                         for y, x in positions)
+                assert "•".encode() in frame
+            os.write(s.master, b"q")
+            raw, err, _ = s.end(0)
+            assert_scope(raw)
+            assert f"grid=111x39 aspect=0.6000 pitch=tty zoom={zoom}%".encode() in err, err
+    print("PASS zoom endpoints survive pixel-only, wider, and narrower TTY resizes")
+
+
 def tests(binary, *, full, strict):
     for args, code, out in [
         (["--help"], 0, b"Usage: oops"),
         (["--version"], 0, b"oops 0.0.1"),
-        (["--bad-argument"], 2, b"expected"),
+        (["--bad-argument"], 2, b"unknown option"),
         ([], 2, b"not a terminal"),
         (["--check"], 2, b"not a terminal"),
     ]:
@@ -240,6 +339,9 @@ def tests(binary, *, full, strict):
         if code:
             assert not result.stdout
     print("PASS plain help, version, args and redirected stdout")
+
+    test_config(binary)
+    test_zoom_resize(binary)
 
     for cols, rows in [(91, 45), (92, 44), (0, 0)]:
         with Session([binary], cols=cols, rows=rows) as s:

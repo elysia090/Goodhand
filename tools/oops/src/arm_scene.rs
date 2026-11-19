@@ -1,6 +1,7 @@
 //! Terminal projection/encoding only. The Goodhand sampler owns geometry,
 //! view orientation and base tone. This program never activates attributes.
 use crate::playback::TICKS;
+use crate::settings::{CellAspect, MAX_ASPECT, MIN_ASPECT, Settings, Zoom};
 use goodhand::ArmSampler;
 use std::io::{self, Write as _};
 use std::time::{Duration, Instant};
@@ -31,26 +32,55 @@ pub struct Display {
     pub pixels: (u16, u16),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PitchSource {
+    Measured,
+    Assumed,
+    Configured,
+}
+
+impl PitchSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Measured => "tty",
+            Self::Assumed => "assumed",
+            Self::Configured => "configured",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {
     pub cols: u16,
     pub rows: u16,
     pub aspect: f64,
-    pub measured_pitch: bool,
+    pub pitch: PitchSource,
+    pub zoom: Zoom,
+    display: Display,
     left: u16,
     top: u16,
 }
 
 impl Layout {
-    pub fn fit(display: Display) -> Self {
+    pub fn fit(display: Display, settings: Settings) -> Self {
         debug_assert!(display.size.fits());
         let Size { cols, rows } = display.size;
         let (px, py) = display.pixels;
-        let measured = (f64::from(px) * f64::from(rows)) / (f64::from(py) * f64::from(cols));
-        let measured_pitch = (0.30..=0.85).contains(&measured)
-            && px >= cols.saturating_mul(3)
-            && py >= rows.saturating_mul(5);
-        let aspect = if measured_pitch { measured } else { 0.5 };
+        let (aspect, pitch) = match settings.cell_aspect {
+            CellAspect::Fixed(value) => (value, PitchSource::Configured),
+            CellAspect::Auto => {
+                let measured =
+                    (f64::from(px) * f64::from(rows)) / (f64::from(py) * f64::from(cols));
+                if (MIN_ASPECT..=MAX_ASPECT).contains(&measured)
+                    && u32::from(px) >= u32::from(cols) * 3
+                    && u32::from(py) >= u32::from(rows) * 5
+                {
+                    (measured, PitchSource::Measured)
+                } else {
+                    (0.5, PitchSource::Assumed)
+                }
+            }
+        };
 
         let available_cols = (cols - 1).min(MAX_COLS);
         let available_rows = (rows - 3).min(MAX_ROWS);
@@ -61,15 +91,20 @@ impl Layout {
             cols: picture_cols,
             rows: picture_rows,
             aspect,
-            measured_pitch,
+            pitch,
+            zoom: settings.zoom,
+            display,
             left: 1 + (cols - 1 - picture_cols) / 2,
             top: 2 + (rows - 3 - picture_rows) / 2,
         }
     }
 
     fn step(self) -> (f64, f64) {
+        // Start from a uniform physical fit, then apply one scale to both axes.
+        // The integer cell window is independent of zoom and still bounds work.
         let dy = (ArmSampler::FRAME_HEIGHT / f64::from(self.rows))
-            .max(ArmSampler::FRAME_WIDTH / (self.aspect * f64::from(self.cols)));
+            .max(ArmSampler::FRAME_WIDTH / (self.aspect * f64::from(self.cols)))
+            / self.zoom.factor();
         (dy * self.aspect, dy)
     }
 }
@@ -86,10 +121,9 @@ impl Painter {
     pub fn paint(
         &mut self,
         tick: u64,
-        display: Display,
+        layout: Layout,
         packet: &mut Vec<u8>,
-    ) -> io::Result<(Layout, Duration)> {
-        let layout = Layout::fit(display);
+    ) -> io::Result<Duration> {
         let len = usize::from(layout.cols) * usize::from(layout.rows);
         self.new.resize(len, None);
         let trace_start = Instant::now();
@@ -165,8 +199,8 @@ impl Painter {
         gray(packet, 135);
         write!(packet, "30 seconds / q or Ctrl-C / tick {tick:03}")
             .expect("Vec writes cannot fail");
-        cup(packet, display.size.rows, 1);
-        Ok((layout, trace_time))
+        cup(packet, layout.display.size.rows, 1);
+        Ok(trace_time)
     }
 
     pub fn interrupted_submission(&mut self) {
@@ -201,28 +235,117 @@ mod tests {
             },
             pixels: (0, 0),
         };
-        let fallback = Layout::fit(d);
+        let fallback = Layout::fit(d, Settings::default());
         assert_eq!((fallback.cols, fallback.rows), (164, 49));
-        assert!(!fallback.measured_pitch);
-        let measured = Layout::fit(Display {
-            pixels: (1155, 825),
-            ..d
-        });
-        assert!(measured.measured_pitch);
+        assert_eq!(fallback.pitch, PitchSource::Assumed);
+        let measured = Layout::fit(
+            Display {
+                pixels: (1155, 825),
+                ..d
+            },
+            Settings::default(),
+        );
+        assert_eq!(measured.pitch, PitchSource::Measured);
         assert!((measured.aspect - 7.0 / 15.0).abs() < 1e-12);
         let (dx, dy) = measured.step();
         assert!((dx / dy - measured.aspect).abs() < 1e-12);
         assert_eq!(
-            Layout::fit(Display {
-                size: Size {
-                    cols: 291,
-                    rows: 100
+            Layout::fit(
+                Display {
+                    size: Size {
+                        cols: 291,
+                        rows: 100
+                    },
+                    ..d
                 },
-                ..d
-            })
+                Settings::default()
+            )
             .cols,
             220
         );
+    }
+
+    #[test]
+    fn projection_fits_at_all_supported_aspects_and_scales_about_its_center() {
+        for (cols, rows) in [(92, 45), (92, 250), (300, 45), (65535, 65535)] {
+            for aspect in [MIN_ASPECT, 0.5, MAX_ASPECT] {
+                let display = Display {
+                    size: Size { cols, rows },
+                    pixels: (0, 0),
+                };
+                let fit = Layout::fit(
+                    display,
+                    Settings {
+                        cell_aspect: CellAspect::Fixed(aspect),
+                        ..Settings::default()
+                    },
+                );
+                let center_slack = |near, far| u16::abs_diff(near, far);
+                assert!(center_slack(fit.left - 1, (cols - fit.cols) - fit.left) <= 1);
+                assert!(center_slack(fit.top - 2, (rows - 1 - fit.rows) - fit.top) <= 1);
+                assert!(fit.cols <= MAX_COLS && fit.rows <= MAX_ROWS);
+                assert_eq!(fit.pitch, PitchSource::Configured);
+                let (fit_x, fit_y) = fit.step();
+                assert!(fit_x * f64::from(fit.cols) >= ArmSampler::FRAME_WIDTH - 1e-12);
+                assert!(fit_y * f64::from(fit.rows) >= ArmSampler::FRAME_HEIGHT - 1e-12);
+                for zoom in ["50", "99", "100", "101", "200"] {
+                    let zoom: Zoom = zoom.parse().unwrap();
+                    let layout = Layout::fit(
+                        display,
+                        Settings {
+                            zoom,
+                            cell_aspect: CellAspect::Fixed(aspect),
+                        },
+                    );
+                    assert_eq!(layout, Layout { zoom, ..fit });
+                    let (dx, dy) = layout.step();
+                    assert!((dx / dy - aspect).abs() < 1e-12);
+                    assert!((dx * zoom.factor() - fit_x).abs() < 1e-12);
+                    assert!((dy * zoom.factor() - fit_y).abs() < 1e-12);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn raw_viewport_change_invalidates_diff_even_if_cell_projection_is_unchanged() {
+        let before = Display {
+            size: Size {
+                cols: 165,
+                rows: 55,
+            },
+            pixels: (1155, 825),
+        };
+        // Calibrated aspect is independent of the reported pixel dimensions.
+        // This resize still invalidates the old surface in the tty.
+        let after = Display {
+            pixels: (1320, 825),
+            ..before
+        };
+        let settings = Settings {
+            zoom: "125".parse().unwrap(),
+            cell_aspect: CellAspect::Fixed(0.5),
+        };
+        let mut painter = Painter::default();
+        let mut packet = Vec::new();
+        let first = Layout::fit(before, settings);
+        let second = Layout::fit(after, settings);
+        assert_eq!(
+            Layout {
+                display: after,
+                ..first
+            },
+            second
+        );
+
+        painter.paint(0, first, &mut packet).unwrap();
+        let original = packet.clone();
+        painter.submitted(first);
+        painter.paint(0, second, &mut packet).unwrap();
+        assert_eq!(packet.strip_prefix(b"\x1b[2J"), Some(original.as_slice()));
+        painter.submitted(second);
+        painter.paint(0, second, &mut packet).unwrap();
+        assert!(!packet.starts_with(b"\x1b[2J"));
     }
 
     #[test]
@@ -233,21 +356,22 @@ mod tests {
         };
         let mut current = Painter::default();
         let mut packet = Vec::new();
-        let (layout, _) = current.paint(0, d, &mut packet).unwrap();
+        let layout = Layout::fit(d, Settings::default());
+        current.paint(0, layout, &mut packet).unwrap();
         current.submitted(layout);
-        current.paint(1, d, &mut packet).unwrap();
+        current.paint(1, layout, &mut packet).unwrap();
         current.interrupted_submission();
         // This attempted redraw can itself be skipped, or write only a
         // prefix. Neither should commit a partial screen to diff history.
-        current.paint(100, d, &mut packet).unwrap();
+        current.paint(100, layout, &mut packet).unwrap();
         assert!(packet.starts_with(RESYNC));
 
         let mut fresh = Vec::new();
-        Painter::default().paint(112, d, &mut fresh).unwrap();
-        let (layout, _) = current.paint(112, d, &mut packet).unwrap();
+        Painter::default().paint(112, layout, &mut fresh).unwrap();
+        current.paint(112, layout, &mut packet).unwrap();
         assert_eq!(packet.strip_prefix(RESYNC), Some(fresh.as_slice()));
         current.submitted(layout);
-        current.paint(113, d, &mut packet).unwrap();
+        current.paint(113, layout, &mut packet).unwrap();
         assert!(!packet.starts_with(RESYNC));
     }
 
@@ -259,11 +383,12 @@ mod tests {
         };
         let mut p = Painter::default();
         let mut first = Vec::new();
-        let (layout, _) = p.paint(0, d, &mut first).unwrap();
+        let layout = Layout::fit(d, Settings::default());
+        p.paint(0, layout, &mut first).unwrap();
         let old = p.new.clone();
         p.submitted(layout);
         let mut next = Vec::new();
-        p.paint(180, d, &mut next).unwrap();
+        p.paint(180, layout, &mut next).unwrap();
         assert_ne!(old, p.new);
         assert!(next.windows(3).any(|w| w == "•".as_bytes()));
         assert!(!next.contains(&b'\n'));

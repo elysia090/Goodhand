@@ -1,8 +1,9 @@
 //! Linux x86-64 terminal boundary. Fullscreen ownership is an explicit pilot
 //! precondition: launch in the main screen of a normal foreground VTE shell.
-use crate::arm_scene::{Display, Layout, MIN_HEIGHT, MIN_WIDTH, Painter, Size};
+use crate::arm_scene::{Display, Layout, MIN_HEIGHT, MIN_WIDTH, Painter, PitchSource, Size};
 use crate::measurement::{Measurement, Timings};
 use crate::playback::{self, RUN_TIME};
+use crate::settings::Settings;
 use crate::terminal_keys::Termios;
 use std::cell::Cell;
 use std::env;
@@ -425,7 +426,7 @@ fn check_live(tty: &Terminal, deadline: Instant) -> io::Result<()> {
     tty.foreground()
 }
 
-fn play(screen: &Screen, stats: &mut Measurement) -> io::Result<()> {
+fn play(screen: &Screen, settings: Settings, stats: &mut Measurement) -> io::Result<()> {
     let start = Instant::now();
     let end = start + RUN_TIME;
     let mut packet = Vec::with_capacity(64_000);
@@ -454,7 +455,8 @@ fn play(screen: &Screen, stats: &mut Measurement) -> io::Result<()> {
         if attempted != Some(tick) {
             attempted = Some(tick);
             let begin_paint = Instant::now();
-            let (layout, trace) = painter.paint(tick, observed, &mut packet)?;
+            let layout = Layout::fit(observed, settings);
+            let trace = painter.paint(tick, layout, &mut packet)?;
             let encode = begin_paint.elapsed().saturating_sub(trace);
             stats.traces += 1;
             // Skip obsolete work, never play a delayed queue.
@@ -528,7 +530,7 @@ fn report_runtime(message: &str) {
     });
 }
 
-pub fn run(check_only: bool, measure: bool) -> u8 {
+pub fn run(check_only: bool, measure: bool, settings: Settings) -> u8 {
     let (terminal, display) = match preflight() {
         Ok(result) => result,
         Err(reason) => {
@@ -537,19 +539,19 @@ pub fn run(check_only: bool, measure: bool) -> u8 {
         }
     };
     if check_only {
-        let layout = Layout::fit(display);
+        let layout = Layout::fit(display, settings);
         println!(
-            "oops: {} columns by {} rows; model grid {} by {}, cell aspect {:.4} ({})",
+            "oops: {} columns by {} rows; model grid {} by {}, cell aspect {:.4} ({}), zoom {}%",
             display.size.cols,
             display.size.rows,
             layout.cols,
             layout.rows,
             layout.aspect,
-            if layout.measured_pitch {
-                "tty pixels"
-            } else {
-                "assumed"
-            }
+            match layout.pitch {
+                PitchSource::Measured => "tty pixels",
+                other => other.label(),
+            },
+            layout.zoom.percent(),
         );
         return 0;
     }
@@ -567,7 +569,7 @@ pub fn run(check_only: bool, measure: bool) -> u8 {
     let playback = screen
         .enter()
         .and_then(|()| screen.enable_keys())
-        .and_then(|()| play(&screen, &mut stats));
+        .and_then(|()| play(&screen, settings, &mut stats));
     let cleanup = screen.restore();
     if let Some(report) = stats.report() {
         report_runtime(&report);

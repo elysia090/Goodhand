@@ -55,9 +55,11 @@ cargo build --offline --release --locked --manifest-path tools/oops/Cargo.toml
 
 In the tested foreground Xfce Terminal profile, the binary runs one 30-second
 rotation and returns to the shell. Press q or Ctrl-C to stop early. It needs
-a terminal of at least 92 columns × 45 rows, UTF-8, and true color. There is
-no runtime Python, video, or artwork input. See the
-[terminal pilot guide](tools/oops/README.md) for constraints and timing.
+a terminal of at least 92 columns × 45 rows, UTF-8, and true color. It
+keeps the drawing centered on resize, and supports optional projection
+zoom and cell-aspect calibration via flags or an explicit config file.
+There is no runtime Python, video, or artwork input. See the
+[terminal pilot guide](tools/oops/README.md) for setup, constraints, and timing.
 
 ## Checks
 

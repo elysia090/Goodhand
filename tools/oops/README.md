@@ -17,12 +17,48 @@ its own after 30 seconds.
 One 24 Hz timeline turn decreases yaw from 0° to −360°. The current model
 is sampled at each available tick; nothing is loaded from old frames or
 replayed to catch up. There is one orthographic ray per active cell. The
-picture is centered and letterboxed without stretching, capped at 220
-columns and 80 rows to bound ray tracing. Cell pitch is estimated from
-TTY pixel geometry when usable, otherwise width:height 1:2 is assumed.
-This preserves modeled proportions on the calibrated profile, not for
-every font or emulator. No sub-cell detail or presentation cadence is
-guaranteed. Gray and occupancy remain separate.
+picture is centered in the drawing area (excluding the labels and the
+last column) and letterboxed without stretching. The grid is capped at
+220 columns and 80 rows to bound ray tracing. Resizing the window or
+changing the terminal font zoom recomputes the fit from the geometry
+reported by the terminal. The camera center and playback clock are not
+reset. No sub-cell detail or presentation cadence is guaranteed. Gray
+and occupancy remain separate.
+
+### Framing and configuration
+
+    oops --check --zoom 85
+    oops --zoom 120 --cell-aspect 0.4667
+    oops --config oops.example.conf --measure
+
+- `--zoom PERCENT` accepts an integer from 50 through 200. At 100 the
+  full model framing rectangle fits the drawable grid. Below 100 the
+  drawing gets smaller around the same camera center; above 100 both
+  axes enlarge uniformly and the edges can intentionally crop. The
+  percentage is relative to the current fit, not to the terminal font
+  size or a fixed cell count. The setting applies for the whole run.
+- `--cell-aspect auto` (the default) derives cell width divided by cell
+  height from TTY pixel geometry if it reports at least 3 × 5 pixels per
+  cell with a ratio in 0.30–0.85. Otherwise it assumes 0.50 (1:2).
+  If your terminal omits usable pixels and your font looks stretched,
+  pass a measured ratio in 0.30–0.85. A manual value takes precedence
+  over TTY measurements throughout the run. Recheck it after a font
+  change that changes the cell proportions.
+- No config is required or searched for. Copy
+  [`oops.example.conf`](oops.example.conf), adjust the settings, and
+  pass the path with `--config PATH`. The file is UTF-8, at most 8 KiB,
+  with optional `zoom` and `cell_aspect` keys, one `key = value` per
+  line. Blank lines, whitespace around entries, and `#` comments are
+  allowed. The precedence per setting is command line, explicit file,
+  built-in default. Unknown or duplicate keys, invalid values (even
+  when overridden), and missing or unreadable explicit files stop
+  startup before the app enters its alternate screen.
+
+`--check` prints the resolved zoom, aspect source, and model grid
+without entering the alternate screen. `--measure` prints those same
+settings for the last fully submitted frame, alongside process timings.
+
+### Playback and recovery
 
 Only changed cell runs are written. The app temporarily turns off canonical
 input and echo without changing terminal signals. Normal completion, q,
@@ -42,6 +78,8 @@ If any prefix reached the terminal, the next current frame cancels an
 incomplete terminal sequence, clears the owned alternate screen and
 draws the full image rather than continuing the old diff. A usable
 resize during submission also drops that frame and redraws at the new size.
+A changed viewport always gets a fresh canvas, even if the render grid
+does not change.
 The dropped-write count includes these discarded submissions; partial-write
 is the subset that wrote some bytes. Timing is submission to the tty,
 not compositor or display timing.

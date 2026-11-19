@@ -48,11 +48,12 @@ impl Measurement {
         }
         let layout = self.layout.map_or("none".into(), |l| {
             format!(
-                "{}x{} aspect={:.4} pitch={}",
+                "{}x{} aspect={:.4} pitch={} zoom={}%",
                 l.cols,
                 l.rows,
                 l.aspect,
-                if l.measured_pitch { "tty" } else { "assumed" }
+                l.pitch.label(),
+                l.zoom.percent(),
             )
         });
         let timing = |read: fn(&Timings) -> Duration| {
