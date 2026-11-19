@@ -553,6 +553,38 @@ def test_inline_shell(binary):
     print("PASS inline repeated normal-shell runs restore q/Ctrl-C; prior output and next command remain")
 
 
+def test_standard_sizes(binary, embedded):
+    profiles = [(80, 24), (120, 30), (132, 43)]
+    expected = [(56, 18), (68, 22), (100, 32)] if embedded else [(60, 18), (73, 22), (106, 32)]
+    for (cols, rows), (grid_cols, grid_rows) in zip(profiles, expected):
+        with Session([binary, "--check"], cols=cols, rows=rows) as s:
+            raw, err, _ = s.end(0)
+            assert f"model grid {grid_cols} by {grid_rows}".encode() in raw
+            assert b"surface=inline" in raw and not err and b"\x1b" not in raw
+        for island in (False, True):
+            opts = ["--island"] if island else []
+            with Session([binary, *opts], cols=cols, rows=rows) as s:
+                top = 1
+                if not island:
+                    top = rows - min(rows * 3 // 4, 80)
+                    s.cursor_reply(1, rows)
+                    s.cursor_reply(2, rows)
+                s.until("•".encode())
+                os.write(s.master, b"q")
+                raw, err, _ = s.end(0)
+                assert not err
+                if island:
+                    assert_scope(raw)
+                else:
+                    assert ENTER not in raw and b"\x1b[2J" not in raw
+                    assert raw.endswith(f"\x1b[{top};1H".encode())
+                positions = re.findall(rb"\x1b\[(\d+);(\d+)H", raw)
+                assert positions and all(top <= int(y) <= rows and 1 <= int(x) <= cols
+                                         for y, x in positions)
+                assert raw.count("•".encode()) >= 20
+    print("PASS 80×24, 120×30, and 132×43 draw bounded art in inline and Island modes")
+
+
 def tests(binary, *, full, strict):
     for args, code, out in [
         (["--help"], 0, b"Usage: oops"),
@@ -582,8 +614,9 @@ def tests(binary, *, full, strict):
     test_config(binary, embedded)
     test_zoom_resize(binary, embedded)
     test_playback_controls(binary)
+    test_standard_sizes(binary, embedded)
 
-    for cols, rows in [(91, 45), (92, 44), (0, 0)]:
+    for cols, rows in [(79, 24), (80, 23), (0, 0)]:
         with Session([binary], cols=cols, rows=rows) as s:
             out, err, _ = s.end(2)
             assert not out and b"need at least" in err and b"\x1b" not in err
@@ -597,9 +630,9 @@ def tests(binary, *, full, strict):
         with Session([binary], env=env) as s:
             out, err, _ = s.end(2)
             assert not out and diagnostic in err and b"\x1b" not in err
-    with Session([binary, "--check"], cols=92, rows=45) as s:
+    with Session([binary, "--check"], cols=80, rows=24) as s:
         out, err, _ = s.end(0)
-        assert not err and b"92 columns by 45 rows" in out
+        assert not err and b"80 columns by 24 rows" in out
         assert b"\x1b" not in out
     print("PASS exact minimum, one-column/row undersize, unknown size/profile and read-only preflight")
 
@@ -608,7 +641,7 @@ def tests(binary, *, full, strict):
         assert not out and b"stdin is not a terminal" in err and b"\x1b" not in err
     print("PASS redirected input does not touch the terminal")
 
-    for cols, rows in [(92, 45), (365, 169)]:
+    for cols, rows in [(80, 24), (365, 169)]:
         with Session([binary, "--island"], cols=cols, rows=rows) as s:
             s.until(f"\x1b[{rows};1H".encode())
             os.write(s.master, b"q")
@@ -648,7 +681,7 @@ def tests(binary, *, full, strict):
         s.until(b"\x1b[86;1H")
         s.geometry(200, 90)
         s.until(lambda raw: raw.count(b"\x1b[2J") >= 2)
-        s.geometry(91, 90)
+        s.geometry(79, 90)
         raw, err, elapsed = s.end(1, timeout=1)
         assert_scope(raw)
         assert b"need at least" in err and elapsed < 1

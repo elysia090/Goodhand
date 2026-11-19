@@ -27,7 +27,7 @@ const HELP: &str = "oops 0.0.1\n\
 \n\
 Loop an arm rotation on a 24 Hz timeline (30 seconds per turn by default).\n\
 Pilot target: a foreground Xfce/VTE-compatible Linux terminal,\n\
-with UTF-8, true color, and at least 92 columns by 45 rows.\n\
+with UTF-8, true color, and at least 80 columns by 24 rows.\n\
 Draw inline below the shell command by default. Press q or Ctrl-C to exit.\n\
 \n\
 Usage: oops [--check | --measure] [--config PATH] [OPTIONS]\n\

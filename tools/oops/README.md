@@ -13,8 +13,9 @@ scrollback, reserving at most three quarters of the visible rows (and no
 more than 80 rows). Use a dark terminal background to see the original
 gray levels. `--island` draws only the artwork in a separate terminal
 buffer, using the current window size; it does not maximize the window.
-The minimum is 92 columns × 45 rows with UTF-8, a single-cell bullet, and
-true color. Playback loops by default, taking 30 seconds per
+The minimum is 80 columns × 24 rows with UTF-8, a single-cell bullet, and
+true color. Drawings at the minimum size have fewer dots; enlarge the
+terminal or use Island for more detail. Playback loops by default, taking 30 seconds per
 turn. Press q or Ctrl-C to return to the shell, or run `./oops --once`
 to stop automatically at the end of the first turn. No config, video, guide, external
 artwork, Python, Rust installation or FFmpeg is required at runtime.

@@ -10,8 +10,8 @@ use goodhand::RasterSpec;
 use std::io::{self, Write as _};
 use std::time::{Duration, Instant};
 
-pub const MIN_WIDTH: u16 = 92;
-pub const MIN_HEIGHT: u16 = 45;
+pub const MIN_WIDTH: u16 = 80;
+pub const MIN_HEIGHT: u16 = 24;
 #[cfg(goodhand_embedded_playback)]
 pub const CONTENT_LABEL: &str = crate::archived_scene::LABEL;
 #[cfg(not(goodhand_embedded_playback))]
