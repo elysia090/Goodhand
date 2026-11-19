@@ -6,19 +6,22 @@ Xfce Terminal shell on GNU/Linux x86-64, run:
     ./oops --check
     ./oops
     ./oops --island
+    ./oops --dots
 
 By default, oops draws only the artwork in the current shell, immediately
 below the command. It leaves prior shell output in the normal screen and
 scrollback, reserving at most three quarters of the visible rows (and no
-more than 80 rows). Use a dark terminal background to see the original
-gray levels. `--island` draws only the artwork in a separate terminal
+more than 80 rows). Use a dark terminal background for the intended
+contrast. `--island` draws only the artwork in a separate terminal
 buffer, using the current window size; it does not maximize the window.
-The minimum is 80 columns × 24 rows with UTF-8, a single-cell bullet, and
-true color. Drawings at the minimum size have fewer dots; enlarge the
-terminal or use Island for more detail. Playback loops by default, taking 30 seconds per
-turn. Press q or Ctrl-C to return to the shell, or run `./oops --once`
-to stop automatically at the end of the first turn. No config, video, guide, external
-artwork, Python, Rust installation or FFmpeg is required at runtime.
+The minimum is 80 columns × 24 rows with UTF-8, true color, and
+single-cell Braille glyphs (or single-cell bullets with `--dots`).
+Drawings at the minimum size have fewer dots. For more detail, enlarge
+the terminal or use Island if height is limiting. Playback loops by
+default, taking 30 seconds per turn. Press q or Ctrl-C to return to the
+shell, or use `./oops --once` to stop after one turn. No config, video,
+guide, external artwork, Python, Rust installation or FFmpeg is required
+at runtime.
 The ELF uses the host's standard GNU/Linux loader and shared libraries.
 
 By default the review build holds its 288 native poses on the 24 Hz clock
@@ -69,27 +72,31 @@ font, frame submission, or screen refresh.
   center by signed whole percentages, from -50 to 50, of the current
   drawing grid's width and height, respectively. Positive x moves right;
   positive y moves down. Shifts are independent of zoom, stay proportional
-  on resize, and can crop at the drawing grid's edges. The header and
-  footer do not move with the picture.
-- The embedded review uses a neutral tone adjustment for readability
-  next to ordinary shell text. It lifts lower and middle gray values
-  and rolls the adjustment off toward white. It leaves native review
-  data, occupied black, and the shell’s text and palette unchanged.
-- `--brightness PERCENT` applies an additional gain of 0 through 200 to
-  each displayed occupied gray code, with integer rounding (ties up)
-  and clipping to 255. The default, 100, adds no gain. At 0, every dot
-  is black but still occupied. This does not change terminal brightness,
-  background, or text, and does not restore clipped highlights.
+  on resize, and can crop at the drawing grid's edges.
+- Braille is the default in both normal and Island playback. Each cell
+  samples a 2×4 grid and displays the rounded mean gray of its occupied
+  dots. This shows more of the authored silhouette at the same size,
+  but cannot preserve a different gray for every dot or add detail
+  beyond the archive. Use `--dots` for the original one-bullet-per-cell
+  renderer if the font does not draw single-cell Braille correctly. The
+  asset-free procedural developer scene limits ray samples on large
+  grids; the embedded artwork takes every Braille sample directly.
+- `--brightness PERCENT` applies a linear gain of 0 through 200 to
+  each displayed gray code, with integer rounding (ties up) and
+  clipping to 255. The default, 100, applies no additional gain. At 0,
+  all marks are black but retain their occupancy. This does not change
+  terminal brightness, background, or text.
 - No config is required or searched for. Copy
   [`oops.example.conf`](oops.example.conf), adjust the settings, and
   pass the path with `--config PATH`. The file is UTF-8, at most 8 KiB,
   with optional `zoom`, `cell_aspect`, `duration`, `direction`,
-  `offset_x`, `offset_y`, and `brightness` keys, one `key = value`
+  `offset_x`, `offset_y`, `brightness`, and `renderer` keys, one `key = value`
   per line. Blank lines, whitespace around entries, and `#` comments are
   allowed. The precedence per setting is command line, explicit file,
-  built-in default. Unknown or duplicate keys, invalid values (even
-  when overridden), and missing or unreadable explicit files stop
-  startup before the app draws or reserves rows.
+  built-in default. Set `renderer = braille` or `renderer = dots`;
+  `--dots` overrides either value. Unknown or duplicate keys, invalid
+  values (even when overridden), and missing or unreadable explicit
+  files stop startup before the app draws or reserves rows.
 
 `--check` prints the compiled content, resolved settings, aspect source,
 and drawing grid without starting playback. `--measure`
@@ -103,9 +110,10 @@ turn's worth of the most recent successfully submitted frames.
 
 Only changed cell runs are written. The app temporarily turns off canonical
 input and echo without changing terminal signals. Normal completion, q, and
-handled signals restore the original keyboard attributes. Inline returns
-the prompt below the command and erases only its reserved rows. Island
-leaves the separate buffer so the original shell is shown again. Inline
+handled signals restore the original keyboard attributes and cursor
+visibility. Inline returns the prompt below the command and erases only
+its reserved rows. Island leaves the separate buffer so the original
+shell is shown again. Inline
 asks VTE for its two cursor positions, not existing screen text. As a
 window or font resize settles, it re-fits the visible reserved area.
 Ordinary width-only changes can redraw during the drag when the earlier

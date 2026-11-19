@@ -5,6 +5,7 @@ mod archived_scene;
 mod arm_scene;
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
 mod cursor_report;
+mod dots;
 mod measurement;
 mod playback;
 mod projection;
@@ -36,7 +37,7 @@ Usage: oops [--check | --measure] [--config PATH] [OPTIONS]\n\
   --check               Check terminal preconditions and display geometry.\n\
   --measure             Play and print process timing after restoring the shell.\n\
   --once                Stop after one turn instead of looping.\n\
-  --island          Use Island mode in the same terminal window.\n\
+  --island              Use Island mode in the same terminal window.\n\
   --config PATH         Read optional display settings from this file only.\n\
   --zoom PERCENT        50–200; 100 fits the full turn, above 100 may crop.\n\
   --cell-aspect ASPECT  auto (default) or cell width/height from 0.30 to 0.85.\n\
@@ -44,7 +45,8 @@ Usage: oops [--check | --measure] [--config PATH] [OPTIONS]\n\
   --direction DIRECTION reverse (default) or forward, same opening pose.\n\
   --offset-x PERCENT    -50 to 50 of drawing width; positive moves right.\n\
   --offset-y PERCENT    -50 to 50 of drawing height; positive moves down.\n\
-  --brightness PERCENT  0–200; 100 adds no gain to the terminal tone.\n\
+  --brightness PERCENT  0–200; 100 adds no gray gain.\n\
+  --dots               Use single-cell bullets instead of default Braille.\n\
   --help, -h            Print this help.\n\
   --version, -V         Print the version.\n\
 \n\
@@ -94,6 +96,13 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Options, Strin
                 if std::mem::replace(&mut options.island, true) {
                     return Err("--island: specified more than once".into());
                 }
+                continue;
+            }
+            Some("--dots") => {
+                options
+                    .overrides
+                    .set(Key::Renderer, "dots")
+                    .map_err(|reason| format!("--dots: {reason}"))?;
                 continue;
             }
             Some("--config") => {
@@ -209,6 +218,7 @@ mod tests {
         assert_eq!(args(&[]).unwrap().repeat, Repeat::Loop);
         assert_eq!(args(&["--measure", "--once"]).unwrap().repeat, Repeat::Once);
         assert_eq!(args(&["--check"]).unwrap().mode, Mode::Check);
+        assert!(args(&["--dots"]).is_ok());
         assert_eq!(args(&["--help"]).unwrap().mode, Mode::Help);
         assert_eq!(args(&["-V"]).unwrap().mode, Mode::Version);
         assert_eq!(
@@ -224,6 +234,10 @@ mod tests {
             &["--help", "--once"],
             &["--once", "--once"],
             &["--island", "--island"],
+            &["--dots", "--dots"],
+            &["--dots", "braille"],
+            &["--braille"],
+            &["--help", "--dots"],
             &["--duration=10"],
             &["--duration", "11"],
             &["--duration", "61"],

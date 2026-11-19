@@ -33,6 +33,10 @@ const SIGTSTP: c_int = 20;
 const QUERY_CURSOR: &[u8] = b"\x1b[6n";
 const SAVE_CURSOR: &[u8] = b"\x1b7";
 const RESTORE_CURSOR: &[u8] = b"\x1b8";
+// Xterm private-mode save/restore, supported by the VTE pilot.
+const SAVE_CURSOR_VISIBILITY: &[u8] = b"\x1b[?25s";
+const HIDE_CURSOR: &[u8] = b"\x1b[?25l";
+const RESTORE_CURSOR_VISIBILITY: &[u8] = b"\x18\x1b[?25r";
 const RESET: &[u8] = b"\x18\x1b[0m";
 const ENTER: &[u8] = b"\x1b[?1049h\x1b[0m\x1b[48;2;0;0;0m\x1b[2J";
 const LEAVE: &[u8] = b"\x18\x1b[0m\x1b[?1049l";
@@ -269,6 +273,7 @@ struct Screen {
     terminal: Terminal,
     entered: bool,
     original_keys: Option<Termios>,
+    cursor_visibility_saved: bool,
     inline: Cell<Option<InlineState>>,
     quit_pressed: Cell<bool>,
 }
@@ -623,6 +628,15 @@ impl Screen {
         original.apply_playback_keys(fd)
     }
 
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        let deadline = Instant::now() + CONTROL_BUDGET;
+        self.control(SAVE_CURSOR_VISIBILITY, deadline)?;
+        // Only restore a fully sent save. If the hide is interrupted, CAN
+        // aborts the unfinished sequence and the saved value is still valid.
+        self.cursor_visibility_saved = true;
+        self.control(HIDE_CURSOR, deadline)
+    }
+
     fn stopping(&self) -> io::Result<bool> {
         if requested_signal().is_some() || self.quit_pressed.get() {
             return Ok(true);
@@ -702,7 +716,14 @@ impl Screen {
             original.apply(self.terminal.fd())
         });
         let screen = self.leave_inline().and_then(|()| self.leave_island());
-        keys.and(screen)
+        // The cursor is independent of row ownership, even after a resize
+        // interrupted cleanup. Never force a formerly hidden cursor visible.
+        let cursor = if std::mem::take(&mut self.cursor_visibility_saved) {
+            self.cleanup_write(RESTORE_CURSOR_VISIBILITY, None)
+        } else {
+            Ok(())
+        };
+        keys.and(screen).and(cursor)
     }
 
     fn cleanup_write(&self, packet: &[u8], size: Option<Size>) -> io::Result<()> {
@@ -976,6 +997,7 @@ pub fn run(
         terminal,
         entered: false,
         original_keys: None,
+        cursor_visibility_saved: false,
         inline: Cell::new(None),
         quit_pressed: Cell::new(false),
     };
@@ -989,6 +1011,7 @@ pub fn run(
                 screen.enter_inline(display)
             }
         })
+        .and_then(|()| screen.hide_cursor())
         .and_then(|()| play(&screen, settings, repeat, &mut stats, &mut painter));
     let cleanup = screen.restore();
     if let Some(report) = stats.report() {

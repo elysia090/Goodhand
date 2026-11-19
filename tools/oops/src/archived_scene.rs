@@ -98,7 +98,7 @@ impl Archive {
         self.select(index)?;
         let spec = RasterSpec::REFERENCE;
         let (center_x, center_y) = self.framing.center;
-        // Each terminal bullet represents a logical dot's region. Region
+        // Each output sample represents a logical dot's region. Region
         // boundaries lie halfway between dot centers, not at a tone cutoff.
         let source_index = |point: f64, axis: usize, count: u16| {
             let pitch = spec.pitch[axis] as f64;

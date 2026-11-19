@@ -56,6 +56,32 @@ impl Projection {
         })
     }
 
+    #[cfg(any(test, not(goodhand_embedded_playback)))]
+    pub fn limit_samples(self, max: usize) -> Self {
+        let samples = self.cols * self.rows;
+        if samples <= max {
+            return self;
+        }
+        // Retain the complete footprint and its center while reducing the
+        // number of expensive procedural traces at large viewport sizes.
+        let scale = (max as f64 / samples as f64).sqrt();
+        let cols = ((self.cols as f64 * scale) as usize).clamp(1, max);
+        let rows = ((self.rows as f64 * scale) as usize).clamp(1, max / cols);
+        let resize = [
+            self.cols as f64 / cols as f64,
+            self.rows as f64 / rows as f64,
+        ];
+        Self {
+            cols,
+            rows,
+            step: [self.step[0] * resize[0], self.step[1] * resize[1]],
+            center: [
+                (self.center[0] + 0.5) / resize[0] - 0.5,
+                (self.center[1] + 0.5) / resize[1] - 0.5,
+            ],
+        }
+    }
+
     pub fn x(self, col: usize) -> f64 {
         (col as f64 - self.center[0]) * self.step[0]
     }
@@ -74,6 +100,35 @@ impl Projection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn limiting_samples_keeps_the_same_outer_edges_and_offsets() {
+        for (cols, rows) in [(460, 320), (71, 30), (2, 11_000)] {
+            let fine = Projection::new(
+                cols,
+                rows,
+                (1000.0, 640.0),
+                0.7,
+                1.3,
+                ["14".parse().unwrap(), "-30".parse().unwrap()],
+            )
+            .unwrap();
+            let coarse = fine.limit_samples(400);
+            assert!(coarse.cols * coarse.rows <= 400);
+            assert!(coarse.cols <= fine.cols && coarse.rows <= fine.rows);
+            let edges = |p: Projection| {
+                [
+                    p.x(0) - p.step[0] * 0.5,
+                    p.x(p.cols - 1) + p.step[0] * 0.5,
+                    p.y(0) - p.step[1] * 0.5,
+                    p.y(p.rows - 1) + p.step[1] * 0.5,
+                ]
+            };
+            for (a, b) in edges(fine).into_iter().zip(edges(coarse)) {
+                assert!((a - b).abs() < 1e-9);
+            }
+        }
+    }
 
     #[test]
     fn offsets_translate_the_center_in_drawable_cells_without_changing_scale() {

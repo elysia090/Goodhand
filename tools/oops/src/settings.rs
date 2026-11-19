@@ -1,4 +1,5 @@
 //! Startup playback and framing settings. Nothing is looked up unless --config names a file.
+use crate::dots::Renderer;
 use crate::playback::{Cycle, CycleDuration, Direction};
 use std::fs::File;
 use std::io::Read;
@@ -126,6 +127,7 @@ pub struct Settings {
     pub cycle: Cycle,
     pub offset: [Offset; 2],
     pub brightness: Brightness,
+    pub renderer: Renderer,
 }
 
 impl Default for Settings {
@@ -136,6 +138,7 @@ impl Default for Settings {
             cycle: Cycle::default(),
             offset: [Offset::default(); 2],
             brightness: Brightness::default(),
+            renderer: Renderer::default(),
         }
     }
 }
@@ -143,12 +146,13 @@ impl Default for Settings {
 impl Settings {
     pub fn playback_status(self) -> String {
         format!(
-            "duration={}s direction={} offset={}%,{}% brightness={}%",
+            "duration={}s direction={} offset={}%,{}% brightness={}% renderer={}",
             self.cycle.duration.seconds(),
             self.cycle.direction,
             self.offset[0].percent(),
             self.offset[1].percent(),
             self.brightness.percent(),
+            self.renderer.label(),
         )
     }
 }
@@ -162,6 +166,7 @@ pub struct Overrides {
     offset_x: Option<Offset>,
     offset_y: Option<Offset>,
     brightness: Option<Brightness>,
+    renderer: Option<Renderer>,
 }
 
 impl Overrides {
@@ -178,6 +183,7 @@ impl Overrides {
                 self.offset_y.unwrap_or(defaults.offset[1]),
             ],
             brightness: self.brightness.unwrap_or(defaults.brightness),
+            renderer: self.renderer.unwrap_or(defaults.renderer),
         }
     }
 
@@ -190,6 +196,7 @@ impl Overrides {
             Key::OffsetX => set(&mut self.offset_x, value),
             Key::OffsetY => set(&mut self.offset_y, value),
             Key::Brightness => set(&mut self.brightness, value),
+            Key::Renderer => set(&mut self.renderer, value),
         }
     }
 }
@@ -203,6 +210,7 @@ pub enum Key {
     OffsetX,
     OffsetY,
     Brightness,
+    Renderer,
 }
 
 impl Key {
@@ -223,6 +231,10 @@ impl Key {
     }
 
     fn from_config(name: &str) -> Option<Self> {
+        // Dots has a value-free CLI shortcut, not a generic value flag.
+        if name == "renderer" {
+            return Some(Self::Renderer);
+        }
         Self::NAMES
             .iter()
             .find_map(|&(key, _, entry)| (name == entry).then_some(key))

@@ -18,7 +18,11 @@ ENTER = b"\x1b[?1049h"
 LEAVE = b"\x18\x1b[0m\x1b[?1049l"
 RESYNC = b"\x18\x1b[0m\x1b[48;2;0;0;0m\x1b[2J"
 CURSOR_QUERY = b"\x1b[6n"
-FOREIGN = (b"\x1b[?25", b"\x1b[?7", b"\x1b]")
+CURSOR_HIDE = b"\x1b[?25s\x1b[?25l"
+CURSOR_RESTORE = b"\x18\x1b[?25r"
+BRAILLE = re.compile(rb"\xe2(?:\xa0[\x81-\xbf]|[\xa1-\xa3][\x80-\xbf])")
+BULLET = "•".encode()
+FOREIGN = (b"\x1b[?7", b"\x1b]")
 
 ENV = os.environ | {
     "TERM": "xterm-256color",
@@ -141,10 +145,20 @@ class Session:
         os.close(self.slave)
 
 
+def assert_cursor_scope(raw):
+    assert raw.count(CURSOR_HIDE) == raw.count(CURSOR_RESTORE) == 1
+    assert raw.count(b"\x1b[?25") == 3, "unexpected cursor toggle"
+    assert raw.index(CURSOR_HIDE) < raw.index(CURSOR_RESTORE)
+    art = raw.find(b"\x1b[38;2;")
+    if art != -1:
+        assert raw.index(CURSOR_HIDE) < art < raw.index(CURSOR_RESTORE)
+
+
 def assert_scope(raw):
     assert raw.count(ENTER) == 1, "missing or duplicate alternate screen entry"
     assert raw.count(LEAVE) == 1, "missing or duplicate alternate screen exit"
-    assert raw.startswith(ENTER) and raw.endswith(LEAVE), "escaped alternate screen ownership"
+    assert raw.startswith(ENTER) and raw.endswith(LEAVE + CURSOR_RESTORE), "escaped alternate screen ownership"
+    assert_cursor_scope(raw)
     assert not any(token in raw for token in FOREIGN), "unowned mode changes"
     assert raw.count(b"\x1b[?1049l") == 1
     assert not any(text in raw for text in (b"oops /", b" / tick ", b"q or Ctrl-C"))
@@ -154,7 +168,7 @@ def assert_scope(raw):
 def assert_partial_wire_is_recoverable(packet):
     """Check every cut in the actual packet's promised VTE wire subset.
 
-    This models only ESC/CSI, CAN and the UTF-8 bullet. It does not replace
+    This models only ESC/CSI, CAN and the three-byte UTF-8 artwork glyphs. It does not replace
     a real emulator check: VTE's CAN action and decoder recovery are the
     protocol assumptions verified independently on the pilot profile.
     """
@@ -177,7 +191,7 @@ def assert_partial_wire_is_recoverable(packet):
             return (extended, 0), None
         if b == 0x1B:
             return (b"\x1b", 0), None
-        if b == 0xE2:  # All non-ASCII in the frame is the UTF-8 bullet.
+        if b == 0xE2:  # Braille and the legacy bullet share this lead byte.
             return (b"", 2), None
         assert 0x20 <= b <= 0x7E
         return (b"", 0), None
@@ -201,7 +215,9 @@ def assert_partial_wire_is_recoverable(packet):
         kind = (len(state[0]), state[1])
         if kind not in cuts:
             assert commands(state, RESYNC) == [b"\x1b[0m", b"\x1b[48;2;0;0;0m", b"\x1b[2J"]
-            assert commands(state, LEAVE) == [b"\x1b[0m", b"\x1b[?1049l"]
+            assert commands(state, LEAVE + CURSOR_RESTORE) == [
+                b"\x1b[0m", b"\x1b[?1049l", b"\x1b[?25r"
+            ]
             cuts.add(kind)
     assert state == (b"", 0)
     assert {(1, 0), (2, 0), (0, 1), (0, 2)} <= cuts, cuts
@@ -270,7 +286,7 @@ def test_config(binary, frame):
         return f"model grid {cols} by {rows}".encode()
 
     check([], named_grid(0.5) + b", cell aspect 0.5000 (assumed), zoom 100%")
-    check(["--config", example], b"duration=30s direction=reverse offset=0%,0% brightness=100%")
+    check(["--config", example], b"duration=30s direction=reverse offset=0%,0% brightness=100% renderer=braille")
     check([], named_grid(7 / 15) + b", cell aspect 0.4667 (tty pixels), zoom 100%", (1155, 825))
     check([], b"cell aspect 0.5000 (assumed)", (1155, 0))
 
@@ -278,7 +294,7 @@ def test_config(binary, frame):
         config = Path(directory) / "display settings.conf"
         config.write_text(
             "zoom=125\ncell_aspect=0.60\nduration=50\ndirection=forward\n"
-            "offset_x=-10\noffset_y=15\nbrightness=125\n",
+            "offset_x=-10\noffset_y=15\nbrightness=125\nrenderer=braille\n",
             encoding="utf-8",
         )
         default_location = Path(directory) / "oops"
@@ -303,13 +319,15 @@ def test_config(binary, frame):
         )
         check(
             ["--config", config],
-            b"duration=50s direction=forward offset=-10%,15% brightness=125%",
+            b"duration=50s direction=forward offset=-10%,15% brightness=125% renderer=braille",
         )
         check(
             ["--duration", "60", "--direction", "reverse", "--offset-x", "30",
-             "--offset-y", "-50", "--brightness", "0", "--config", config],
-            b"duration=60s direction=reverse offset=30%,-50% brightness=0%",
+             "--offset-y", "-50", "--brightness", "0", "--dots", "--config", config],
+            b"duration=60s direction=reverse offset=30%,-50% brightness=0% renderer=dots",
         )
+        config.write_bytes(b"renderer=dots\n")
+        check(["--config", config], b"renderer=dots")
         for source, expected in [
             (None, b"No such file"),
             (b"zoom=125\nunknown=1\n", b'line 2: unknown key "unknown"'),
@@ -320,6 +338,8 @@ def test_config(binary, frame):
             (b"direction=left\n", b"line 1: direction: expected"),
             (b"offset_x=-51\n", b"line 1: offset_x: expected"),
             (b"brightness=201\n", b"line 1: brightness: expected"),
+            (b"renderer=blocks\n", b"line 1: renderer: expected braille or dots"),
+            (b"renderer=braille\nrenderer=dots\n", b"line 2: renderer: specified more than once"),
             (b"\xff", b"file must be UTF-8"),
             (b"#" * 8193, b"file exceeds 8192 bytes"),
         ]:
@@ -328,7 +348,7 @@ def test_config(binary, frame):
             else:
                 config.unlink()
             # A CLI override does not conceal a malformed config file.
-            with Session([binary, "--config", config, "--zoom", "100"]) as s:
+            with Session([binary, "--config", config, "--zoom", "100", "--dots"]) as s:
                 out, err, _ = s.end(2)
                 assert not out and b"display settings.conf" in err
                 assert expected in err and b"\x1b" not in err, err
@@ -375,7 +395,7 @@ def test_zoom_resize(binary, framing):
                 positions = re.findall(rb"\x1b\[(\d+);(\d+)H", frame)
                 assert positions and all(1 <= int(y) <= rows and 1 <= int(x) <= cols
                                          for y, x in positions)
-                assert "•".encode() in frame
+                assert BRAILLE.search(frame)
             os.write(s.master, b"q")
             raw, err, _ = s.end(0)
             assert_scope(raw)
@@ -396,6 +416,7 @@ def opening_cells(binary, options):
         frame = raw[:raw.index(marker) + len(marker)]
         assert not err, (frame[-80:], err)
     occupied = {}
+    dots = "--dots" in options
     row = col = gray = None
     for token in re.split(rb"(\x1b\[[0-9;?]*[A-Za-z])", frame):
         if token.startswith(b"\x1b["):
@@ -407,8 +428,9 @@ def opening_cells(binary, options):
                 gray = red
         else:
             for char in token.decode("utf-8"):
-                if char == "•":
-                    occupied[row, col] = gray
+                is_mark = char == "•" if dots else "\u2801" <= char <= "\u28ff"
+                if is_mark:
+                    occupied[row, col] = (char, gray)
                 col += 1
     assert occupied
     return occupied
@@ -420,14 +442,41 @@ def test_playback_controls(binary):
     assert forward == centered, "direction or duration changed the opening pose"
 
     dark = opening_cells(binary, ["--brightness", "0"])
-    assert dark == dict.fromkeys(centered, 0), "zero gain changed dot occupancy"
+    assert dark == {pos: (mark, 0) for pos, (mark, _) in centered.items()}, \
+        "zero gain changed Braille dot occupancy"
 
-    shifted = opening_cells(binary, ["--brightness", "200", "--offset-x", "10"])
+    legacy = opening_cells(binary, ["--dots"])
+    shifted = opening_cells(binary, ["--dots", "--brightness", "200", "--offset-x", "10"])
     # Both scenes fit all 120 columns in this viewport. A 10% move adds
-    # exactly 12 columns; 50% zoom leaves enough room not to crop artwork.
-    assert shifted == {(row, col + 12): min(255, gray * 2)
-                       for (row, col), gray in centered.items()}
+    # exactly 12 columns; 50% zoom avoids cropping. Use the uncapped
+    # legacy sample grid to exercise exact cell alignment in both scenes.
+    assert shifted == {(row, col + 12): (mark, min(255, gray * 2))
+                       for (row, col), (mark, gray) in legacy.items()}
     print("PASS playback direction/duration opening parity, gray gain, and artwork-only offset")
+
+
+def test_renderer(binary):
+    for island in (False, True):
+        surface = ["--island"] if island else []
+        for dots in (False, True):
+            with Session([binary, *surface, *(["--dots"] if dots else [])],
+                         cols=116, rows=41) as s:
+                if not island:
+                    s.cursor_reply(1, 41)
+                    s.cursor_reply(2, 41)
+                s.until(lambda raw: raw.count(s.bottom) >= (1 if island else 2))
+                # Exercise both exit keys in both surfaces, including legacy.
+                os.write(s.master, b"\x03" if dots else b"q")
+                raw, err, _ = s.end(130 if dots else 0)
+                assert not err
+                assert_cursor_scope(raw)
+                assert bool(BRAILLE.search(raw)) == (not dots), "wrong Braille renderer"
+                assert (BULLET in raw) == dots, "wrong bullet renderer"
+                if island:
+                    assert_scope(raw)
+                else:
+                    assert raw.endswith(b"\x1b[11;1H" + CURSOR_RESTORE)
+    print("PASS default Braille and --dots in inline and Island; q and Ctrl-C restore")
 
 
 def timing_output(err):
@@ -494,7 +543,7 @@ def test_inline(binary):
     with Session([binary], cols=165, rows=55) as s:
         s.cursor_reply(1, 55)
         s.cursor_reply(2, 55)
-        s.until("•".encode())
+        s.until(BRAILLE.search)
         s.until(lambda raw: raw.count(s.bottom) >= 3)
         first = len(s.raw)
 
@@ -502,13 +551,14 @@ def test_inline(binary):
         s.cursor_reply(3, 50)
         s.cursor_reply(4, 7)
         s.until(lambda raw: b"\x1b[7;1H\x1b[K" in raw[first:] and
-                "•".encode() in raw[first:])
+                BRAILLE.search(raw, first))
         s.until(lambda raw: raw[first:].count(s.bottom) >= 3)
         os.write(s.master, b"q")
         raw, err, _ = s.end(0)
         assert not err
         assert raw.count(b"\n") == 41
-        assert raw.endswith(b"\x1b[7;1H")
+        assert_cursor_scope(raw)
+        assert raw.endswith(b"\x1b[7;1H" + CURSOR_RESTORE)
         for packet, top, below in ((raw[:first], 14, 55), (raw[first:], 7, 50)):
             assert all(top <= int(row) <= below
                        for row in re.findall(rb"\x1b\[(\d+);\d+H", packet))
@@ -530,6 +580,8 @@ def test_inline(binary):
         s.cursor_reply(4, 50)  # Reversed markers do not establish ownership.
         raw, err, _ = s.end(1)
         assert b"cannot locate reserved inline rows" in err
+        assert_cursor_scope(raw)
+        assert raw.endswith(CURSOR_RESTORE)
         assert b"\x1b[K" not in raw and b"\x1b[2J" not in raw
     print("PASS inline only repaints the reserved rows, rejects a mid-line launch, and clears on q")
 
@@ -562,7 +614,8 @@ def test_width_follow(binary):
         os.write(s.master, b"q")
         raw, err, _ = s.end(0)
         assert not err and b"\x1b8" not in raw
-        assert raw.endswith(b"\x1b[12;1H")
+        assert_cursor_scope(raw)
+        assert raw.endswith(b"\x1b[12;1H" + CURSOR_RESTORE)
         assert raw_position_safe(raw[end:], bottom=54, top=12)
     print("PASS width follows one inert cursor report; a racing report cannot erase stale rows")
 
@@ -600,7 +653,7 @@ def test_inline_shell(binary):
             ).encode())
             s.cursor_reply(run * 2 + 1, 55)
             s.cursor_reply(run * 2 + 2, 55)
-            s.until(lambda raw: "•".encode() in raw[pos:])
+            s.until(lambda raw: BRAILLE.search(raw, pos))
             os.write(s.master, key)
             s.until(f"CHECK_{status}_OK".encode())
         os.write(s.master, b"printf 'AFTER_%s\\n' OK\n")
@@ -608,7 +661,7 @@ def test_inline_shell(binary):
         os.write(s.master, b"exit\n")
         raw, err, _ = s.end(0)
         assert not err and raw.count(CURSOR_QUERY) == 4
-        assert raw.index(b"PRIOR_OUTPUT") < raw.index("•".encode()) < raw.index(b"AFTER_OK")
+        assert raw.index(b"PRIOR_OUTPUT") < BRAILLE.search(raw).start() < raw.index(b"AFTER_OK")
         assert not any(token in raw for token in (ENTER, LEAVE, b"\x1b[2J", b"\x1b[3J"))
     print("PASS inline repeated normal-shell runs restore q/Ctrl-C; prior output and next command remain")
 
@@ -628,7 +681,7 @@ def test_standard_sizes(binary, framing):
                     top = rows - min(rows * 3 // 4, 80)
                     s.cursor_reply(1, rows)
                     s.cursor_reply(2, rows)
-                s.until("•".encode())
+                s.until(BRAILLE.search)
                 os.write(s.master, b"q")
                 raw, err, _ = s.end(0)
                 assert not err
@@ -636,11 +689,12 @@ def test_standard_sizes(binary, framing):
                     assert_scope(raw)
                 else:
                     assert ENTER not in raw and b"\x1b[2J" not in raw
-                    assert raw.endswith(f"\x1b[{top};1H".encode())
+                    assert_cursor_scope(raw)
+                    assert raw.endswith(f"\x1b[{top};1H".encode() + CURSOR_RESTORE)
                 positions = re.findall(rb"\x1b\[(\d+);(\d+)H", raw)
                 assert positions and all(top <= int(y) <= rows and 1 <= int(x) <= cols
                                          for y, x in positions)
-                assert raw.count("•".encode()) >= 20
+                assert len(BRAILLE.findall(raw)) >= 20
     print("PASS 80×24, 116×41, 120×30, and 132×43 draw bounded art in inline and Island modes")
 
 
@@ -680,6 +734,7 @@ def tests(binary, *, full, strict):
     test_config(binary, framing)
     test_zoom_resize(binary, framing)
     test_playback_controls(binary)
+    test_renderer(binary)
     test_standard_sizes(binary, framing)
 
     for cols, rows in [(79, 24), (80, 23), (0, 0)]:
@@ -713,7 +768,7 @@ def tests(binary, *, full, strict):
             os.write(s.master, b"q")
             raw, err, _ = s.end(0)
             assert_scope(raw)
-            assert not err and "•".encode() in raw
+            assert not err and BRAILLE.search(raw)
             positions = re.findall(rb"\x1b\[(\d+);(\d+)H", raw)
             assert all(1 <= int(y) <= rows and 1 <= int(x) <= cols for y, x in positions)
     print("PASS minimum and oversized terminal output stays inside its viewport")
@@ -898,8 +953,8 @@ def tests(binary, *, full, strict):
         os.write(s.master, b"exit\n")
         raw, err, _ = s.end(0)
         assert raw.count(ENTER) == raw.count(LEAVE) == 2, bytes(raw[-500:])
-        assert raw.index(LEAVE) < raw.index(b"CHECK_130_OK")
-        assert raw.rindex(LEAVE) < raw.index(b"CHECK_0_OK")
+        assert raw.index(LEAVE + CURSOR_RESTORE) < raw.index(b"CHECK_130_OK")
+        assert raw.rindex(LEAVE + CURSOR_RESTORE) < raw.index(b"CHECK_0_OK")
         assert b"failed" not in err
     print("PASS interactive Bash returns after q and keyboard Ctrl-C with original stty")
 

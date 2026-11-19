@@ -1,6 +1,7 @@
 //! Terminal projection and encoding, independent of which scene supplies the dots.
 #[cfg(goodhand_embedded_playback)]
 use crate::archived_scene::Archive;
+use crate::dots::DotCell;
 use crate::projection::Projection;
 use crate::settings::{CellAspect, MAX_ASPECT, MIN_ASPECT, Settings};
 #[cfg(not(goodhand_embedded_playback))]
@@ -156,11 +157,12 @@ impl Layout {
     }
 
     fn projection(self) -> io::Result<Projection> {
+        let [x, y] = self.settings.renderer.subdivisions();
         Projection::new(
-            usize::from(self.cols),
-            usize::from(self.rows),
+            usize::from(self.cols) * x,
+            usize::from(self.rows) * y,
             self.frame_size,
-            self.aspect,
+            self.aspect * y as f64 / x as f64,
             self.settings.zoom.factor(),
             self.settings.offset,
         )
@@ -170,8 +172,11 @@ impl Layout {
 pub struct Painter {
     #[cfg(goodhand_embedded_playback)]
     archive: Archive,
-    old: Vec<Option<u8>>,
-    new: Vec<Option<u8>>,
+    old: Vec<Option<DotCell>>,
+    new: Vec<Option<DotCell>>,
+    samples: Vec<Option<u8>>,
+    #[cfg(not(goodhand_embedded_playback))]
+    procedural_grid: Vec<Option<u8>>,
     old_layout: Option<Layout>,
     needs_resync: bool,
     drawn_right: u16,
@@ -184,6 +189,9 @@ impl Painter {
             archive: Archive::embedded()?,
             old: Vec::new(),
             new: Vec::new(),
+            samples: Vec::new(),
+            #[cfg(not(goodhand_embedded_playback))]
+            procedural_grid: Vec::new(),
             old_layout: None,
             needs_resync: false,
             drawn_right: 0,
@@ -205,29 +213,29 @@ impl Painter {
     ) -> io::Result<Duration> {
         let trace_start = Instant::now();
         let projection = layout.projection()?;
-        self.new.resize(projection.cols * projection.rows, None);
+        self.samples.resize(projection.cols * projection.rows, None);
         let settings = layout.settings;
         #[cfg(goodhand_embedded_playback)]
         self.archive
-            .project(settings.cycle, tick, projection, &mut self.new)?;
+            .project(settings.cycle, tick, projection, &mut self.samples)?;
         #[cfg(not(goodhand_embedded_playback))]
         {
             let sampler = ArmSampler::new(settings.cycle.yaw(tick)).map_err(io::Error::other)?;
-            for (row, pixels) in self.new.chunks_exact_mut(projection.cols).enumerate() {
-                let y = -projection.y(row);
-                for (col, pixel) in pixels.iter_mut().enumerate() {
-                    *pixel = sampler.sample(projection.x(col), y);
-                }
-            }
+            project_procedural(
+                &sampler,
+                projection,
+                &mut self.samples,
+                &mut self.procedural_grid,
+            );
         }
-        // Calibrate only the displayed art. Occupancy, archive values, and
-        // existing shell foreground/background never take this transfer.
-        for level in self.new.iter_mut().flatten() {
-            #[cfg(goodhand_embedded_playback)]
-            let gray = review_display_gray(*level);
-            #[cfg(not(goodhand_embedded_playback))]
-            let gray = *level;
-            *level = settings.brightness.apply(gray);
+        let cols = usize::from(layout.cols);
+        self.new.resize(cols * usize::from(layout.rows), None);
+        settings.renderer.pack(&self.samples, cols, &mut self.new);
+        // Adjust art gray only, never the presence of a dot or the UI colors.
+        if settings.brightness != crate::settings::Brightness::default() {
+            for cell in self.new.iter_mut().flatten() {
+                cell.gray = settings.brightness.apply(cell.gray);
+            }
         }
         let trace_time = trace_start.elapsed();
 
@@ -249,7 +257,6 @@ impl Painter {
         let mut active = None;
         let mut right = 0;
         let inline = layout.inline.is_some();
-        let cols = usize::from(layout.cols);
         for (row, pixels) in self.new.chunks_exact(cols).enumerate() {
             let limit = if inline {
                 pixels
@@ -280,12 +287,13 @@ impl Painter {
                 cup(packet, y, layout.left + col as u16);
                 loop {
                     match pixels[col] {
-                        Some(level) => {
-                            if active != Some(level) {
-                                gray(packet, level);
-                                active = Some(level);
+                        Some(cell) => {
+                            if active != Some(cell.gray) {
+                                gray(packet, cell.gray);
+                                active = Some(cell.gray);
                             }
-                            packet.extend_from_slice("•".as_bytes());
+                            let mut utf8 = [0; 4];
+                            packet.extend_from_slice(cell.mark.encode_utf8(&mut utf8).as_bytes());
                         }
                         None => packet.push(b' '),
                     }
@@ -339,22 +347,43 @@ impl Painter {
     }
 }
 
-pub fn cup(out: &mut Vec<u8>, row: u16, col: u16) {
-    write!(out, "\x1b[{row};{col}H").expect("Vec writes cannot fail");
+#[cfg(not(goodhand_embedded_playback))]
+fn project_procedural(
+    sampler: &ArmSampler,
+    view: Projection,
+    output: &mut [Option<u8>],
+    scratch: &mut Vec<Option<u8>>,
+) {
+    // Bound ray tracing to the legacy maximum. The authored archive
+    // is sampled directly and never uses this developer-scene limit.
+    let source = view.limit_samples(usize::from(MAX_COLS) * usize::from(MAX_ROWS));
+    let reduced = source.cols != view.cols || source.rows != view.rows;
+    let trace = if reduced {
+        scratch.resize(source.cols * source.rows, None);
+        &mut scratch[..]
+    } else {
+        &mut *output
+    };
+    for (row, pixels) in trace.chunks_exact_mut(source.cols).enumerate() {
+        let y = -source.y(row);
+        for (col, pixel) in pixels.iter_mut().enumerate() {
+            *pixel = sampler.sample(source.x(col), y);
+        }
+    }
+    if reduced {
+        // Reuse the traced sample nearest each output dot's center.
+        let nearest = |i, fine, coarse| (2 * i + 1) * coarse / (2 * fine);
+        for (row, pixels) in output.chunks_exact_mut(view.cols).enumerate() {
+            let start = nearest(row, view.rows, source.rows) * source.cols;
+            for (col, pixel) in pixels.iter_mut().enumerate() {
+                *pixel = scratch[start + nearest(col, view.cols, source.cols)];
+            }
+        }
+    }
 }
 
-#[cfg(any(test, goodhand_embedded_playback))]
-fn review_display_gray(gray: u8) -> u8 {
-    // Match the 125% terminal preview chosen against plain shell white.
-    // Above 144, progressively withdraw that added quarter toward white.
-    // f(v) = v + .25 * (v - 255 * ((v - 144)_+ / 111)^2), rounded once.
-    // The shoulder remains increasing; black and white stay fixed.
-    const KNEE: u32 = 144;
-    const SPAN_SQUARED: u32 = (255 - KNEE) * (255 - KNEE);
-    let value = u32::from(gray);
-    let high = value.saturating_sub(KNEE);
-    let added = (value * SPAN_SQUARED - 255 * high * high + 2 * SPAN_SQUARED) / (4 * SPAN_SQUARED);
-    (value + added) as u8
+pub fn cup(out: &mut Vec<u8>, row: u16, col: u16) {
+    write!(out, "\x1b[{row};{col}H").expect("Vec writes cannot fail");
 }
 
 fn gray(out: &mut Vec<u8>, gray: u8) {
@@ -364,20 +393,12 @@ fn gray(out: &mut Vec<u8>, gray: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dots::Renderer;
 
-    #[test]
-    fn review_display_gain_preserves_endpoints_and_does_not_clip() {
-        assert_eq!(review_display_gray(0), 0);
-        assert_eq!(review_display_gray(255), 255);
-        for gray in 0..u8::MAX {
-            let adjusted = review_display_gray(gray);
-            assert!(adjusted >= gray);
-            assert!(adjusted <= review_display_gray(gray + 1));
-            assert!(adjusted.saturating_sub(gray) <= 39);
-        }
-        for (source, displayed) in [(13, 16), (40, 50), (82, 103), (139, 174), (161, 200)] {
-            assert_eq!(review_display_gray(source), displayed);
-        }
+    fn cell_pitch(layout: Layout) -> (f64, f64) {
+        let (dx, dy) = layout.projection().unwrap().step();
+        let [x, y] = layout.settings.renderer.subdivisions();
+        (dx * x as f64, dy * y as f64)
     }
 
     #[test]
@@ -406,7 +427,7 @@ mod tests {
         );
         assert_eq!(measured.pitch, PitchSource::Measured);
         assert!((measured.aspect - 7.0 / 15.0).abs() < 1e-12);
-        let (dx, dy) = measured.projection().unwrap().step();
+        let (dx, dy) = cell_pitch(measured);
         assert!((dx / dy - measured.aspect).abs() < 1e-12);
         assert_eq!(
             Layout::fit(
@@ -444,7 +465,7 @@ mod tests {
                 assert!(center_slack(fit.top - 2, (rows - 1 - fit.rows) - fit.top) <= 1);
                 assert!(fit.cols <= MAX_COLS && fit.rows <= MAX_ROWS);
                 assert_eq!(fit.pitch, PitchSource::Configured);
-                let (fit_x, fit_y) = fit.projection().unwrap().step();
+                let (fit_x, fit_y) = cell_pitch(fit);
                 assert!(fit_x * f64::from(fit.cols) >= FRAME_SIZE.0 - 1e-12);
                 assert!(fit_y * f64::from(fit.rows) >= FRAME_SIZE.1 - 1e-12);
                 for zoom in ["50", "99", "100", "101", "200"] {
@@ -467,10 +488,20 @@ mod tests {
                             ..fit
                         }
                     );
-                    let (dx, dy) = layout.projection().unwrap().step();
+                    let (dx, dy) = cell_pitch(layout);
                     assert!((dx / dy - aspect).abs() < 1e-12);
                     assert!((dx * zoom.factor() - fit_x).abs() < 1e-12);
                     assert!((dy * zoom.factor() - fit_y).abs() < 1e-12);
+                    let legacy = Layout {
+                        settings: Settings {
+                            renderer: Renderer::Dots,
+                            ..layout.settings
+                        },
+                        ..layout
+                    };
+                    let (dot_x, dot_y) = cell_pitch(legacy);
+                    assert!((dx - dot_x).abs() < 1e-12);
+                    assert!((dy - dot_y).abs() < 1e-12);
                 }
             }
         }
@@ -563,7 +594,12 @@ mod tests {
         let mut next = Vec::new();
         p.paint(180, layout, &mut next).unwrap();
         assert_ne!(old, p.new);
-        assert!(next.windows(3).any(|w| w == "•".as_bytes()));
+        assert!(
+            std::str::from_utf8(&next)
+                .unwrap()
+                .chars()
+                .any(|mark| ('\u{2801}'..='\u{28ff}').contains(&mark))
+        );
         assert!(!next.contains(&b'\n'));
     }
 }
