@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 // Linux x86-64 numeric ABI; intentionally not compiled on other OS/arch.
 const TIOCGWINSZ: c_ulong = 0x5413;
-const O_NOCTTY: c_int = 0o400;
-const O_NONBLOCK: c_int = 0o4000;
+pub(crate) const O_NOCTTY: c_int = 0o400;
+pub(crate) const O_NONBLOCK: c_int = 0o4000;
 const POLLOUT: c_short = 0x004;
 const POLL_FAILURE: c_short = 0x008 | 0x010 | 0x020; // ERR, HUP, NVAL
 const SIGHUP: c_int = 1;

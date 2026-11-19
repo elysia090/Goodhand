@@ -8,7 +8,9 @@ mod terminal;
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
 mod terminal_keys;
 
-use settings::{Overrides, Settings, read_config};
+use settings::Overrides;
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+use settings::{Settings, read_config};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -99,6 +101,7 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Options, Strin
     Ok(options)
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
 impl Options {
     fn settings(self) -> Result<Settings, String> {
         let file = self.config.as_deref().map(read_config).transpose()?;
@@ -121,10 +124,7 @@ fn main() -> ExitCode {
             println!("oops {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        mode => match options.settings() {
-            Ok(settings) => run(mode, settings),
-            Err(reason) => error_exit(&reason),
-        },
+        _ => run(options),
     }
 }
 
@@ -134,12 +134,16 @@ fn error_exit(reason: &str) -> ExitCode {
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
-fn run(mode: Mode, settings: Settings) -> ExitCode {
-    terminal::run(mode == Mode::Check, mode == Mode::Measure, settings).into()
+fn run(options: Options) -> ExitCode {
+    let mode = options.mode;
+    match options.settings() {
+        Ok(settings) => terminal::run(mode == Mode::Check, mode == Mode::Measure, settings).into(),
+        Err(reason) => error_exit(&reason),
+    }
 }
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")))]
-fn run(_mode: Mode, _settings: Settings) -> ExitCode {
+fn run(_options: Options) -> ExitCode {
     error_exit("terminal playback is only implemented on GNU/Linux x86-64")
 }
 

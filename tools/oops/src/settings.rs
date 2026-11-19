@@ -1,5 +1,5 @@
 //! Startup framing settings. Nothing is looked up unless --config names a file.
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::str::FromStr;
@@ -135,18 +135,26 @@ pub fn read_config(path: &Path) -> Result<Overrides, String> {
 }
 
 fn read_config_inner(path: &Path) -> Result<Overrides, String> {
-    // Reject special files and bound memory use even for a file that grows
-    // while being read. Config is an explicit startup input, never hot read.
-    if !fs::metadata(path)
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+    {
+        use crate::terminal::{O_NOCTTY, O_NONBLOCK};
+        use std::os::unix::fs::OpenOptionsExt as _;
+        // Opening a FIFO must not block before the descriptor can be checked.
+        options.custom_flags(O_NOCTTY | O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(|error| error.to_string())?;
+    // Check the file we actually opened, not an earlier path lookup.
+    if !file
+        .metadata()
         .map_err(|error| error.to_string())?
         .is_file()
     {
         return Err("expected a regular file".into());
     }
     let mut bytes = Vec::new();
-    File::open(path)
-        .map_err(|error| error.to_string())?
-        .take((MAX_CONFIG_BYTES + 1) as u64)
+    file.take((MAX_CONFIG_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
     if bytes.len() > MAX_CONFIG_BYTES {

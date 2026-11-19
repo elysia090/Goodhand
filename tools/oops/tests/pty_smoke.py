@@ -274,11 +274,19 @@ def test_config(binary):
                 assert not out and b"display settings.conf" in err
                 assert expected in err and b"\x1b" not in err, err
 
+        config.write_bytes(b"#" * 8192)
+        symlink = Path(directory) / "config-link"
+        symlink.symlink_to(config)
+        check(["--config", symlink], b"zoom 100%")
+
         fifo = Path(directory) / "not-a-config"
         os.mkfifo(fifo)
-        with Session([binary, "--config", fifo]) as s:
-            out, err, _ = s.end(2, timeout=1)
-            assert not out and b"expected a regular file" in err, err
+        symlink.unlink()
+        symlink.symlink_to(fifo)
+        for path in (fifo, symlink, directory):
+            with Session([binary, "--config", path]) as s:
+                out, err, _ = s.end(2, timeout=1)
+                assert not out and b"expected a regular file" in err, err
     print("PASS config example, per-setting CLI precedence, pitch source, and startup failures")
 
 

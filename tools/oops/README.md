@@ -78,8 +78,8 @@ If any prefix reached the terminal, the next current frame cancels an
 incomplete terminal sequence, clears the owned alternate screen and
 draws the full image rather than continuing the old diff. A usable
 resize during submission also drops that frame and redraws at the new size.
-A changed viewport always gets a fresh canvas, even if the render grid
-does not change.
+After a reported viewport change, the next successfully submitted frame
+uses a fresh canvas, even if the render grid does not change.
 The dropped-write count includes these discarded submissions; partial-write
 is the subset that wrote some bytes. Timing is submission to the tty,
 not compositor or display timing.
