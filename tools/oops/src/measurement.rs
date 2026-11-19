@@ -22,6 +22,7 @@ pub struct Measurement {
     partial_write: u64,
     bytes: u64,
     written: u64,
+    holds: u64,
     layout: Option<Layout>,
     timings: VecDeque<Timings>,
     first: Option<Phase>,
@@ -44,6 +45,7 @@ impl Measurement {
             partial_write: 0,
             bytes: 0,
             written: 0,
+            holds: 0,
             layout: None,
             first: None,
             last: None,
@@ -82,6 +84,26 @@ impl Measurement {
         if !self.enabled {
             return;
         }
+        self.record_phase(phase);
+        self.written = self.written.saturating_add(1);
+        self.bytes = self.bytes.saturating_add(bytes as u64);
+        self.layout = Some(layout);
+        self.late_write = self.late_write.saturating_add(u64::from(late));
+        // Quantiles are a bounded recent sample, counters cover the full run.
+        if self.timings.len() == self.settings.cycle.ticks() as usize {
+            self.timings.pop_front();
+        }
+        self.timings.push_back(timing);
+    }
+
+    pub fn record_hold(&mut self, phase: Phase) {
+        if self.enabled {
+            self.record_phase(phase);
+            self.holds = self.holds.saturating_add(1);
+        }
+    }
+
+    fn record_phase(&mut self, phase: Phase) {
         self.first.get_or_insert(phase);
         if let Some(previous) = self.last.replace(phase) {
             if previous >= phase {
@@ -97,15 +119,6 @@ impl Measurement {
                 self.max_gap = self.max_gap.max(u64::try_from(gap).unwrap_or(u64::MAX));
             }
         }
-        self.written = self.written.saturating_add(1);
-        self.bytes = self.bytes.saturating_add(bytes as u64);
-        self.layout = Some(layout);
-        self.late_write = self.late_write.saturating_add(u64::from(late));
-        // Quantiles are a bounded recent sample, counters cover the full run.
-        if self.timings.len() == self.settings.cycle.ticks() as usize {
-            self.timings.pop_front();
-        }
-        self.timings.push_back(timing);
     }
 
     pub fn report(&self) -> Option<String> {
@@ -135,9 +148,10 @@ impl Measurement {
                 .unwrap_or(0);
             format!("{}/{}", p95, times.last().copied().unwrap_or(0))
         };
-        let written = match self.repeat {
-            Repeat::Once => format!("{}/{}", self.written, self.settings.cycle.ticks()),
-            Repeat::Loop => self.written.to_string(),
+        let handled = self.written.saturating_add(self.holds);
+        let handled = match self.repeat {
+            Repeat::Once => format!("{handled}/{}", self.settings.cycle.ticks()),
+            Repeat::Loop => handled.to_string(),
         };
         let phase_label = |phase: Option<Phase>| {
             phase.map_or_else(|| "none".into(), |p| format!("{}:{}", p.turn, p.tick))
@@ -149,7 +163,9 @@ impl Measurement {
             |(before, after)| format!("{}-{}", phase_label(Some(before)), phase_label(Some(after))),
         );
         Some(format!(
-            "oops: grid={layout} written={written} rendered={} stale={} late_write={} dropped_write={} partial_write={} bytes={} trace_p95/max_us={} encode_p95/max_us={} write_p95/max_us={} timing_samples={} {} playback={} first={first} last={last} join={join} max_gap={} order_errors={}\n",
+            "oops: grid={layout} written={} held={} handled={handled} rendered={} stale={} late_write={} dropped_write={} partial_write={} bytes={} trace_p95/max_us={} encode_p95/max_us={} prep_p95/max_us={} write_p95/max_us={} timing_samples={} {} playback={} first={first} last={last} join={join} max_gap={} order_errors={}\n",
+            self.written,
+            self.holds,
             self.traces,
             self.stale,
             self.late_write,
@@ -158,6 +174,7 @@ impl Measurement {
             self.bytes,
             timing(|t| t.trace),
             timing(|t| t.encode),
+            timing(|t| t.trace + t.encode),
             timing(|t| t.write),
             self.timings.len(),
             self.settings.playback_status(),

@@ -483,7 +483,7 @@ def timing_output(err):
     def field(name):
         return re.search(rb"\b" + name + rb"=([^ \n]+)", err)[1]
     first, last = (tuple(map(int, field(name).split(b":"))) for name in (b"first", b"last"))
-    count = int(field(b"written").split(b"/")[0])
+    count = int(field(b"written"))
     assert field(b"order_errors") == b"0", err
     return first, last, count, field
 
@@ -531,7 +531,7 @@ def test_custom_duration(binary):
         assert_scope(raw)
         first, last, count, field = timing_output(err)
         assert first[0] == last[0] == 0 and first[1] <= 3 and 284 <= last[1] < 288, err
-        assert field(b"written").endswith(b"/288") and count == raw.count(s.bottom), err
+        assert field(b"handled").endswith(b"/288") and count == raw.count(s.bottom), err
         assert b"duration=12s direction=forward" in err and b"playback=once" in err
         assert 11.9 <= elapsed < 15, elapsed
     print(f"PASS 12-second forward completion: {elapsed:.6f} s, {count}/288 ticks")
@@ -974,9 +974,18 @@ def tests(binary, *, full, strict):
             assert b"grid=" in err and b"trace_p95/max_us=" in err
             print(err.decode().strip())
             assert 29.9 <= elapsed < 34, elapsed
+            handled = int(field(b"handled").split(b"/")[0])
+            held = int(field(b"held"))
+            assert handled == count + held and count == raw.count(s.bottom)
+            if embedded:
+                assert 0 < held <= 432 and count <= 288, err
+            else:
+                assert held == 0, err
             if strict:
-                assert count == 720, f"only {count} distinct ticks"
-        print(f"PASS natural completion: {elapsed:.6f} s, {count}/720 ticks, {len(raw)} bytes")
+                assert handled == 720, f"only {handled} handled ticks"
+                assert count == (288 if embedded else 720), err
+        print(f"PASS natural completion: {elapsed:.6f} s, {handled}/720 ticks, "
+              f"{count} writes, {held} holds, {len(raw)} bytes")
         if not strict:
             with Session([binary, "--island", "--measure", "--once"], cols=290, rows=97) as s:
                 s.until(lambda _: time.monotonic() - s.start >= 29.68, timeout=32)

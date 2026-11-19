@@ -14,12 +14,46 @@ struct Framing {
     center: (f64, f64),
 }
 
+#[derive(Default)]
+struct TileMap {
+    view: Option<Projection>,
+    cols: Vec<usize>,
+    rows: Vec<usize>,
+}
+
+impl TileMap {
+    fn update(&mut self, view: Projection, framing: Framing) {
+        if self.view == Some(view) {
+            return;
+        }
+        let spec = RasterSpec::REFERENCE;
+        // Each output sample takes the tile containing its center. An index
+        // equal to the axis length is the sentinel for off-canvas samples.
+        let source_index = |point: f64, axis: usize, count: u16| {
+            let index = ((point - tile_origin(spec, axis)) / spec.pitch[axis] as f64).floor();
+            if index >= 0.0 && index < f64::from(count) {
+                index as usize
+            } else {
+                usize::from(count)
+            }
+        };
+        self.cols.clear();
+        self.cols
+            .extend((0..view.cols).map(|c| source_index(framing.center.0 + view.x(c), 0, WIDTH)));
+        self.rows.clear();
+        self.rows
+            .extend((0..view.rows).map(|r| source_index(framing.center.1 + view.y(r), 1, HEIGHT)));
+        self.view = Some(view);
+    }
+}
+
 pub struct Archive {
     shape: Sequence<'static>,
     tone: ToneSequence<'static>,
     framing: Framing,
     last_pose: Option<u32>,
     points: Vec<Option<u8>>,
+    tiles: TileMap,
 }
 
 impl Archive {
@@ -43,7 +77,13 @@ impl Archive {
             framing: occupied_framing(shape).unwrap_or_else(native_framing),
             last_pose: None,
             points: vec![None; usize::from(WIDTH) * usize::from(HEIGHT)],
+            tiles: TileMap::default(),
         })
+    }
+
+    #[cfg(goodhand_embedded_playback)]
+    pub fn selected_pose(&self) -> Option<u32> {
+        self.last_pose
     }
 
     #[cfg(goodhand_embedded_playback)]
@@ -96,22 +136,21 @@ impl Archive {
         let index =
             pose_at_tick(cycle, tick).ok_or_else(|| io::Error::other("invalid playback tick"))?;
         self.select(index)?;
-        let spec = RasterSpec::REFERENCE;
-        let (center_x, center_y) = self.framing.center;
-        // Each output sample represents a logical dot's region. Region
-        // boundaries lie halfway between dot centers, not at a tone cutoff.
-        let source_index = |point: f64, axis: usize, count: u16| {
-            let pitch = spec.pitch[axis] as f64;
-            let index = ((point - tile_origin(spec, axis)) / pitch).floor();
-            (index >= 0.0 && index < f64::from(count)).then_some(index as usize)
-        };
-        for (r, row) in output.chunks_exact_mut(view.cols).enumerate() {
-            let y = source_index(center_y + view.y(r), 1, HEIGHT);
-            for (c, cell) in row.iter_mut().enumerate() {
-                let x = source_index(center_x + view.x(c), 0, WIDTH);
-                *cell = y
-                    .zip(x)
-                    .and_then(|(y, x)| self.points[y * usize::from(WIDTH) + x]);
+        self.tiles.update(view, self.framing);
+        let width = usize::from(WIDTH);
+        for (&y, dst) in self
+            .tiles
+            .rows
+            .iter()
+            .zip(output.chunks_exact_mut(view.cols))
+        {
+            let start = y * width;
+            if let Some(src) = self.points.get(start..start + width) {
+                for (&x, pixel) in self.tiles.cols.iter().zip(dst) {
+                    *pixel = src.get(x).copied().flatten();
+                }
+            } else {
+                dst.fill(None);
             }
         }
         Ok(())
@@ -166,7 +205,7 @@ fn occupied_framing(shape: Sequence<'_>) -> Option<Framing> {
     })
 }
 
-fn pose_at_tick(cycle: Cycle, tick: u64) -> Option<u32> {
+pub fn pose_at_tick(cycle: Cycle, tick: u64) -> Option<u32> {
     let ticks = cycle.ticks();
     if tick >= ticks {
         return None;

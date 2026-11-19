@@ -105,10 +105,13 @@ aspect, and zoom of the last fully submitted frame. Use `--once` with
 `--measure` to automatically report after a single turn. Loop counters
 cover the whole run; timing percentiles and maxima cover up to one
 turn's worth of the most recent successfully submitted frames.
+`written` counts completed TTY packets; `held` counts ticks that reused
+the committed pose. `handled` and the phase markers include both.
 
 ### Playback and recovery
 
-Only changed cell runs are written. The app temporarily turns off canonical
+Only changed cell runs are written. A held archived pose on the same
+viewport is neither rendered nor written again. The app temporarily turns off canonical
 input and echo without changing terminal signals. Normal completion, q, and
 handled signals restore the original keyboard attributes and cursor
 visibility. Inline returns the prompt below the command and erases only

@@ -2,7 +2,7 @@
 use crate::settings::Offset;
 use std::io;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Projection {
     pub cols: usize,
     pub rows: usize,

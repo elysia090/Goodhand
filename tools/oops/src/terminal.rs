@@ -852,7 +852,10 @@ fn play(
             if redraw {
                 painter.interrupted_submission();
             }
-            let trace = painter.paint(slot.phase.tick, layout, &mut packet)?;
+            let Some(trace) = painter.paint(slot.phase.tick, layout, &mut packet)? else {
+                stats.record_hold(slot.phase);
+                continue;
+            };
             let encode = begin_paint.elapsed().saturating_sub(trace);
             stats.record_trace();
             // Compare both turn and tick so even a pause of a whole turn

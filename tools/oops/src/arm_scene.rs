@@ -1,6 +1,6 @@
 //! Terminal projection and encoding, independent of which scene supplies the dots.
 #[cfg(goodhand_embedded_playback)]
-use crate::archived_scene::Archive;
+use crate::archived_scene::{Archive, pose_at_tick};
 use crate::dots::DotCell;
 use crate::projection::Projection;
 use crate::settings::{CellAspect, MAX_ASPECT, MIN_ASPECT, Settings};
@@ -172,6 +172,8 @@ impl Layout {
 pub struct Painter {
     #[cfg(goodhand_embedded_playback)]
     archive: Archive,
+    #[cfg(goodhand_embedded_playback)]
+    submitted_pose: Option<u32>,
     old: Vec<Option<DotCell>>,
     new: Vec<Option<DotCell>>,
     samples: Vec<Option<u8>>,
@@ -187,6 +189,8 @@ impl Painter {
         Ok(Self {
             #[cfg(goodhand_embedded_playback)]
             archive: Archive::embedded()?,
+            #[cfg(goodhand_embedded_playback)]
+            submitted_pose: None,
             old: Vec::new(),
             new: Vec::new(),
             samples: Vec::new(),
@@ -210,11 +214,22 @@ impl Painter {
         tick: u64,
         layout: Layout,
         packet: &mut Vec<u8>,
-    ) -> io::Result<Duration> {
+    ) -> io::Result<Option<Duration>> {
         let trace_start = Instant::now();
+        let settings = layout.settings;
+        let same_layout = !self.needs_resync && self.old_layout == Some(layout);
+        packet.clear();
+        #[cfg(goodhand_embedded_playback)]
+        if same_layout
+            && self.submitted_pose.is_some()
+            && self.submitted_pose == pose_at_tick(settings.cycle, tick)
+        {
+            // Committed pixels and the lower cursor marker are already
+            // correct. Do not rerender or submit a packet for this hold.
+            return Ok(None);
+        }
         let projection = layout.projection()?;
         self.samples.resize(projection.cols * projection.rows, None);
-        let settings = layout.settings;
         #[cfg(goodhand_embedded_playback)]
         self.archive
             .project(settings.cycle, tick, projection, &mut self.samples)?;
@@ -239,8 +254,6 @@ impl Painter {
         }
         let trace_time = trace_start.elapsed();
 
-        packet.clear();
-        let same_layout = !self.needs_resync && self.old_layout == Some(layout);
         if !same_layout {
             if let Some(area) = layout.inline {
                 if self.needs_resync || self.old_layout.is_some() {
@@ -292,8 +305,7 @@ impl Painter {
                                 gray(packet, cell.gray);
                                 active = Some(cell.gray);
                             }
-                            let mut utf8 = [0; 4];
-                            packet.extend_from_slice(cell.mark.encode_utf8(&mut utf8).as_bytes());
+                            packet.extend_from_slice(&settings.renderer.glyph(cell.pattern));
                         }
                         None => packet.push(b' '),
                     }
@@ -332,7 +344,7 @@ impl Painter {
                 .map_or(layout.display.size.rows, |area| area.below),
             1,
         );
-        Ok(trace_time)
+        Ok(Some(trace_time))
     }
 
     pub fn interrupted_submission(&mut self) {
@@ -340,6 +352,10 @@ impl Painter {
     }
 
     pub fn submitted(&mut self, layout: Layout) -> u16 {
+        #[cfg(goodhand_embedded_playback)]
+        {
+            self.submitted_pose = self.archive.selected_pose();
+        }
         std::mem::swap(&mut self.old, &mut self.new);
         self.old_layout = Some(layout);
         self.needs_resync = false;
@@ -386,8 +402,58 @@ pub fn cup(out: &mut Vec<u8>, row: u16, col: u16) {
     write!(out, "\x1b[{row};{col}H").expect("Vec writes cannot fail");
 }
 
+#[derive(Clone, Copy)]
+struct GrayCommand {
+    bytes: [u8; 19],
+    len: u8,
+}
+
+static GRAYS: [GrayCommand; 256] = {
+    let mut table = [GrayCommand {
+        bytes: [0; 19],
+        len: 0,
+    }; 256];
+    let mut value = 0;
+    while value < table.len() {
+        let n = if value < 10 {
+            1
+        } else if value < 100 {
+            2
+        } else {
+            3
+        };
+        let digits = [
+            b'0' + (value / 100) as u8,
+            b'0' + (value / 10 % 10) as u8,
+            b'0' + (value % 10) as u8,
+        ];
+        let mut command = GrayCommand {
+            bytes: *b"\x1b[38;2;000;000;000m",
+            len: 0,
+        };
+        let mut i = 7;
+        let mut channel = 0;
+        while channel < 3 {
+            let mut digit = 3 - n;
+            while digit < 3 {
+                command.bytes[i] = digits[digit];
+                i += 1;
+                digit += 1;
+            }
+            command.bytes[i] = if channel == 2 { b'm' } else { b';' };
+            i += 1;
+            channel += 1;
+        }
+        command.len = i as u8;
+        table[value] = command;
+        value += 1;
+    }
+    table
+};
+
 fn gray(out: &mut Vec<u8>, gray: u8) {
-    write!(out, "\x1b[38;2;{gray};{gray};{gray}m").expect("Vec writes cannot fail");
+    let item = &GRAYS[usize::from(gray)];
+    out.extend_from_slice(&item.bytes[..usize::from(item.len)]);
 }
 
 #[cfg(test)]
@@ -399,6 +465,19 @@ mod tests {
         let (dx, dy) = layout.projection().unwrap().step();
         let [x, y] = layout.settings.renderer.subdivisions();
         (dx * x as f64, dy * y as f64)
+    }
+
+    #[test]
+    fn gray_commands_match_the_canonical_truecolor_wire() {
+        let mut actual = Vec::new();
+        for code in 0..=u8::MAX {
+            actual.clear();
+            gray(&mut actual, code);
+            assert_eq!(
+                actual,
+                format!("\x1b[38;2;{code};{code};{code}m").as_bytes()
+            );
+        }
     }
 
     #[test]
@@ -577,6 +656,34 @@ mod tests {
         current.submitted(layout);
         current.paint(113, layout, &mut packet).unwrap();
         assert!(!packet.starts_with(RESYNC));
+    }
+
+    #[cfg(goodhand_embedded_playback)]
+    #[test]
+    fn holds_reuse_only_a_committed_pose_at_the_same_viewport() {
+        let display = Display {
+            size: Size {
+                cols: 116,
+                rows: 41,
+            },
+            pixels: (0, 0),
+        };
+        let mut painter = Painter::new().unwrap();
+        let mut packet = Vec::new();
+        let layout = Layout::for_surface(display, Settings::default(), painter.frame_size(), None);
+        // A render that never reached the terminal cannot suppress a hold.
+        assert!(painter.paint(0, layout, &mut packet).unwrap().is_some());
+        assert!(painter.paint(1, layout, &mut packet).unwrap().is_some());
+        painter.submitted(layout);
+        assert!(painter.paint(2, layout, &mut packet).unwrap().is_none());
+        assert!(packet.is_empty());
+        assert!(painter.paint(3, layout, &mut packet).unwrap().is_some());
+        assert!(painter.paint(4, layout, &mut packet).unwrap().is_some());
+        painter.submitted(layout);
+        assert!(painter.paint(4, layout, &mut packet).unwrap().is_none());
+        painter.interrupted_submission();
+        assert!(painter.paint(4, layout, &mut packet).unwrap().is_some());
+        assert!(packet.starts_with(RESYNC));
     }
 
     #[test]
