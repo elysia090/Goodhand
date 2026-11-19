@@ -605,45 +605,58 @@ impl Screen {
         keys.and(screen)
     }
 
+    fn cleanup_write(&self, packet: &[u8], size: Option<Size>) -> io::Result<()> {
+        let deadline = Instant::now() + CONTROL_BUDGET;
+        playback::write_bounded(&self.terminal.0, packet, || {
+            if Instant::now() >= deadline {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            self.terminal.foreground()?;
+            if let Some(expected) = size {
+                if self.terminal.display()?.size != expected {
+                    return Err(io::ErrorKind::WouldBlock.into());
+                }
+            }
+            Ok(())
+        })
+    }
+
     fn leave_inline(&self) -> io::Result<()> {
         let Some(state) = self.inline.take() else {
             return Ok(());
         };
         let display = self.terminal.display()?;
         let mut packet = Vec::from(RESET);
-        if display == state.display {
+        if display.size == state.display.size {
             clear_rows(&mut packet, state.rows);
             cup(&mut packet, state.rows.top, 1);
-        } else if state.anchored {
-            packet.push(b'\r');
-        } else {
-            // A resize interrupted a packet/probe. Do not erase uncertain
-            // rows; append a fresh prompt line below the visible content.
-            cup(&mut packet, display.size.rows.max(1), 1);
-            packet.extend_from_slice(b"\r\n");
-        }
-        let deadline = Instant::now() + CONTROL_BUDGET;
-        playback::write_bounded(&self.terminal.0, &packet, || {
-            if Instant::now() >= deadline {
-                return Err(io::ErrorKind::TimedOut.into());
+            match self.cleanup_write(&packet, Some(display.size)) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    // A resize interrupted cleanup. Do not resume the old
+                    // suffix, even if part of an erase sequence was sent.
+                    packet.truncate(RESET.len());
+                }
+                result => return result,
             }
-            self.terminal.foreground()
-        })
+        } else if state.anchored {
+            // The cursor itself has reflowed with the lower marker. Its
+            // position is safe, but the old absolute erase range is not.
+            packet.push(b'\r');
+            return self.cleanup_write(&packet, None);
+        }
+        // Lost ownership of absolute rows during an interrupted draw or
+        // cleanup. Append a fresh prompt line without erasing those rows.
+        cup(&mut packet, self.terminal.display()?.size.rows.max(1), 1);
+        packet.extend_from_slice(b"\r\n");
+        self.cleanup_write(&packet, None)
     }
 
     fn leave_island(&mut self) -> io::Result<()> {
         if !std::mem::take(&mut self.entered) {
             return Ok(());
         }
-        let deadline = Instant::now() + CONTROL_BUDGET;
-        // CAN aborts a potentially partial CSI when the one in-flight packet
-        // was interrupted. Then reset draws and leave only our alternate screen.
-        playback::write_bounded(&self.terminal.0, LEAVE, || {
-            if Instant::now() >= deadline {
-                return Err(io::ErrorKind::TimedOut.into());
-            }
-            self.terminal.foreground()
-        })
+        // CAN aborts a potentially partial CSI; leave only our alternate screen.
+        self.cleanup_write(LEAVE, None)
     }
 }
 
