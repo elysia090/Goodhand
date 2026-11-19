@@ -723,7 +723,7 @@ fn play(
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
                 Err(error) => return Err(error),
             };
-            let layout = Layout::for_surface(observed, settings, inline);
+            let layout = Layout::for_surface(observed, settings, painter.frame_size(), inline);
             let trace = painter.paint(slot.phase.tick, layout, &mut packet)?;
             let encode = begin_paint.elapsed().saturating_sub(trace);
             stats.record_trace();
@@ -822,9 +822,16 @@ pub fn run(
             return 2;
         }
     };
+    let mut painter = match Painter::new() {
+        Ok(painter) => painter,
+        Err(error) => {
+            eprintln!("oops: cannot initialize playback: {error}");
+            return 2;
+        }
+    };
     if check_only {
         let layout = if island {
-            Layout::fit(display, settings)
+            Layout::for_surface(display, settings, painter.frame_size(), None)
         } else {
             // Preflight remains read-only: this is the planned inline
             // drawing size, before any terminal reflow or allocation.
@@ -832,10 +839,10 @@ pub fn run(
                 top: 1,
                 below: 1 + reservation(display.size),
             };
-            Layout::for_surface(display, settings, Some(rows))
+            Layout::for_surface(display, settings, painter.frame_size(), Some(rows))
         };
         println!(
-            "oops: {} columns by {} rows; model grid {} by {}, cell aspect {:.4} ({}), zoom {}%; content: {CONTENT_LABEL}; {} playback={repeat} surface={}",
+            "oops: {} columns by {} rows; model grid {} by {}, cell aspect {:.4} ({}), zoom {}%; content: {CONTENT_LABEL}; {} playback={repeat} surface={} frame={}x{}",
             display.size.cols,
             display.size.rows,
             layout.cols,
@@ -848,16 +855,11 @@ pub fn run(
             settings.zoom.percent(),
             settings.playback_status(),
             if island { "island" } else { "inline" },
+            painter.frame_size().0,
+            painter.frame_size().1,
         );
         return 0;
     }
-    let mut painter = match Painter::new() {
-        Ok(painter) => painter,
-        Err(error) => {
-            eprintln!("oops: cannot initialize playback: {error}");
-            return 2;
-        }
-    };
     if let Err(error) = install_signals() {
         eprintln!("oops: cannot install signal handlers: {error}");
         return 2;

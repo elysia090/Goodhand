@@ -24,9 +24,12 @@ The ELF uses the host's standard GNU/Linux loader and shared libraries.
 By default the review build holds its 288 native poses on the 24 Hz clock
 for three and two ticks alternately, in the reviewed direction. Occupancy and gray remain separate:
 black can be occupied. Nothing is fetched or reconstructed during
-playback. The fixed source canvas is sampled onto the terminal's cell
-grid with a uniform physical scale; no arbitrary stretching, contrast
-curve or interpolation between poses is applied. The result is a cell
+playback. A single envelope around all occupied samples in the full turn, plus
+five sample tiles on each side, is fit onto the terminal grid at a
+uniform scale. The framing and center are fixed across poses. This
+keeps the art larger without cropping at the default zoom. At small
+sizes, some detail is necessarily lost to the coarser cell grid.
+The original reviewed canvas, pixels, and pose timing are unchanged. The result is a cell
 presentation, not pixel-exact video or a guarantee about every monitor,
 font, frame submission, or screen refresh.
 
@@ -39,8 +42,8 @@ font, frame submission, or screen refresh.
     oops --once --duration 30
 
 - `--zoom PERCENT` accepts an integer from 50 through 200. At 100 the
-  complete source canvas fits the drawable grid. Below 100 the
-  drawing gets smaller around the same camera center; above 100 both
+  full-turn envelope and its margin fit the drawable grid. Below 100 the
+  drawing gets smaller around the same center; above 100 both
   axes enlarge uniformly and the edges can intentionally crop. The
   percentage is relative to the current fit, not to the terminal font
   size or a fixed cell count. The setting applies for the whole run.

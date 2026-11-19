@@ -38,7 +38,7 @@ Usage: oops [--check | --measure] [--config PATH] [OPTIONS]\n\
   --once                Stop after one turn instead of looping.\n\
   --island          Use Island mode in the same terminal window.\n\
   --config PATH         Read optional display settings from this file only.\n\
-  --zoom PERCENT        50–200; 100 fits the model frame, above 100 may crop.\n\
+  --zoom PERCENT        50–200; 100 fits the full turn, above 100 may crop.\n\
   --cell-aspect ASPECT  auto (default) or cell width/height from 0.30 to 0.85.\n\
   --duration SECONDS    12–60 whole seconds (default 30).\n\
   --direction DIRECTION reverse (default) or forward, same opening pose.\n\

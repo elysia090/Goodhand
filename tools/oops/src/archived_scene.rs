@@ -8,9 +8,16 @@ use std::io;
 #[cfg(goodhand_embedded_playback)]
 pub const LABEL: &str = "embedded review";
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Framing {
+    size: (f64, f64),
+    center: (f64, f64),
+}
+
 pub struct Archive {
     shape: Sequence<'static>,
     tone: ToneSequence<'static>,
+    framing: Framing,
     last_pose: Option<u32>,
     points: Vec<Option<u8>>,
 }
@@ -33,9 +40,15 @@ impl Archive {
         Ok(Self {
             shape,
             tone,
+            framing: occupied_framing(shape).unwrap_or_else(native_framing),
             last_pose: None,
             points: vec![None; usize::from(WIDTH) * usize::from(HEIGHT)],
         })
+    }
+
+    #[cfg(goodhand_embedded_playback)]
+    pub fn frame_size(&self) -> (f64, f64) {
+        self.framing.size
     }
 
     fn select(&mut self, index: u32) -> io::Result<()> {
@@ -84,20 +97,18 @@ impl Archive {
             pose_at_tick(cycle, tick).ok_or_else(|| io::Error::other("invalid playback tick"))?;
         self.select(index)?;
         let spec = RasterSpec::REFERENCE;
-        let (w, h) = (spec.width as f64, spec.height as f64);
+        let (center_x, center_y) = self.framing.center;
         // Each terminal bullet represents a logical dot's region. Region
         // boundaries lie halfway between dot centers, not at a tone cutoff.
         let source_index = |point: f64, axis: usize, count: u16| {
             let pitch = spec.pitch[axis] as f64;
-            let origin =
-                spec.origin[axis] as f64 + (spec.dot_size[axis] as f64 - 1.0) * 0.5 - pitch * 0.5;
-            let index = ((point - origin) / pitch).floor();
+            let index = ((point - tile_origin(spec, axis)) / pitch).floor();
             (index >= 0.0 && index < f64::from(count)).then_some(index as usize)
         };
         for (r, row) in output.chunks_exact_mut(view.cols).enumerate() {
-            let y = source_index(h / 2.0 + view.y(r), 1, HEIGHT);
+            let y = source_index(center_y + view.y(r), 1, HEIGHT);
             for (c, cell) in row.iter_mut().enumerate() {
-                let x = source_index(w / 2.0 + view.x(c), 0, WIDTH);
+                let x = source_index(center_x + view.x(c), 0, WIDTH);
                 *cell = y
                     .zip(x)
                     .and_then(|(y, x)| self.points[y * usize::from(WIDTH) + x]);
@@ -105,6 +116,54 @@ impl Archive {
         }
         Ok(())
     }
+}
+
+fn native_framing() -> Framing {
+    let spec = RasterSpec::REFERENCE;
+    let size = (spec.width as f64, spec.height as f64);
+    Framing {
+        size,
+        center: (size.0 / 2.0, size.1 / 2.0),
+    }
+}
+
+fn tile_origin(spec: RasterSpec, axis: usize) -> f64 {
+    spec.origin[axis] as f64 + (spec.dot_size[axis] as f64 - 1.0) / 2.0
+        - spec.pitch[axis] as f64 / 2.0
+}
+
+fn occupied_framing(shape: Sequence<'_>) -> Option<Framing> {
+    // Use full source sampling tiles, not tone, with one fixed margin
+    // throughout the turn. Run ends and bottom rows are exclusive.
+    const MARGIN_TILES: f64 = 5.0;
+    let (mut left, mut top) = (shape.width(), shape.height());
+    let (mut right, mut bottom) = (0, 0);
+    for pose in 0..shape.frame_count() {
+        for row in shape.frame(pose)?.rows() {
+            for run in row.runs() {
+                left = left.min(run.start());
+                right = right.max(run.end());
+                top = top.min(row.y());
+                bottom = bottom.max(row.y() + 1);
+            }
+        }
+    }
+    if left >= right || top >= bottom {
+        return None;
+    }
+    let spec = RasterSpec::REFERENCE;
+    let axis = |axis: usize, lo: u16, hi: u16| {
+        let pitch = spec.pitch[axis] as f64;
+        let center = tile_origin(spec, axis) + (f64::from(lo) + f64::from(hi)) * pitch / 2.0;
+        let span = (f64::from(hi - lo) + 2.0 * MARGIN_TILES) * pitch;
+        (span, center)
+    };
+    let (width, x) = axis(0, left, right);
+    let (height, y) = axis(1, top, bottom);
+    Some(Framing {
+        size: (width, height),
+        center: (x, y),
+    })
 }
 
 fn pose_at_tick(cycle: Cycle, tick: u64) -> Option<u32> {
@@ -151,7 +210,24 @@ mod tests {
         let mut frames = vec![vec![0, 79]; POSES as usize];
         frames[1] = vec![0, 190];
         let tone = asset(b"GHT8", &frames);
-        Archive::from_bytes(shape.leak(), tone.leak()).unwrap()
+        let mut archive = Archive::from_bytes(shape.leak(), tone.leak()).unwrap();
+        // The projection tests specify a native-grid camera explicitly.
+        archive.framing = native_framing();
+        archive
+    }
+
+    #[test]
+    fn framing_uses_occupied_extremes_from_the_entire_turn() {
+        let mut first = vec![0; usize::from(HEIGHT)];
+        first.splice(1..2, [1, 8, 2]);
+        let mut late = vec![0; usize::from(HEIGHT)];
+        late.splice(105..106, [1, 150, 4]);
+        let mut entries = vec![first; POSES as usize];
+        entries[POSES as usize - 1] = late;
+        let data = asset(b"GHSH", &entries);
+        let framing = occupied_framing(Sequence::from_bytes(&data).unwrap()).unwrap();
+        assert_eq!(framing.size, (780.0, 575.0));
+        assert_eq!(framing.center, (405.0, 307.5));
     }
 
     #[test]
@@ -308,9 +384,61 @@ mod tests {
 
     #[cfg(goodhand_embedded_playback)]
     #[test]
-    fn selected_build_has_a_complete_archive() {
+    fn complete_archive_fits_the_default_view_for_every_pose() {
+        use crate::arm_scene::{Display, InlineRows, Layout, Size, reservation};
+        use crate::settings::{CellAspect, Settings};
+
         let archive = Archive::embedded().unwrap();
         assert_eq!(archive.shape.frame_count(), POSES);
         assert_eq!(archive.tone.frame_count(), POSES);
+        let frame = archive.framing;
+        let spec = RasterSpec::REFERENCE;
+        let (tile_x, tile_y) = (tile_origin(spec, 0), tile_origin(spec, 1));
+        let (pitch_x, pitch_y) = (spec.pitch[0] as f64, spec.pitch[1] as f64);
+        for (cols, rows) in [(80, 24), (116, 41), (120, 30), (132, 43), (290, 97)] {
+            let size = Size { cols, rows };
+            let display = Display {
+                size,
+                pixels: (0, 0),
+            };
+            let inline = Some(InlineRows {
+                top: 1,
+                below: 1 + reservation(size),
+            });
+            for surface in [None, inline] {
+                for aspect in [0.30, 0.50, 0.85] {
+                    let settings = Settings {
+                        cell_aspect: CellAspect::Fixed(aspect),
+                        ..Settings::default()
+                    };
+                    let layout = Layout::for_surface(display, settings, frame.size, surface);
+                    let view = Projection::new(
+                        usize::from(layout.cols),
+                        usize::from(layout.rows),
+                        frame.size,
+                        aspect,
+                        1.0,
+                        settings.offset,
+                    )
+                    .unwrap();
+                    let (dx, dy) = view.step();
+                    let (x, y) = frame.center;
+                    let left = x + view.x(0) - dx / 2.0;
+                    let top = y + view.y(0) - dy / 2.0;
+                    let right = x + view.x(view.cols - 1) + dx / 2.0;
+                    let bottom = y + view.y(view.rows - 1) + dy / 2.0;
+                    for pose in 0..POSES {
+                        for row in archive.shape.frame(pose).unwrap().rows() {
+                            for run in row.runs() {
+                                assert!(left < tile_x + pitch_x * f64::from(run.start()));
+                                assert!(right > tile_x + pitch_x * f64::from(run.end()));
+                                assert!(top < tile_y + pitch_y * f64::from(row.y()));
+                                assert!(bottom > tile_y + pitch_y * (f64::from(row.y()) + 1.0));
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

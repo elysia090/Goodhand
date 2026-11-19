@@ -247,7 +247,15 @@ def test_resize_wire_expectations():
             assert actual is result, raw
 
 
-def test_config(binary, embedded):
+def model_grid(frame, cols, rows, aspect=0.5, *, inline=False):
+    width, height = frame
+    ratio = width / (height * aspect)
+    usable_cols = min(cols - 1, 220)
+    usable_rows = min(rows * 3 // 4 if inline else rows - 3, 80)
+    return min(usable_cols, int(usable_rows * ratio)), min(usable_rows, int(usable_cols / ratio))
+
+
+def test_config(binary, frame):
     def check(args, expected, pixels=(0, 0), env=None):
         with Session([binary, "--check", "--island", *args], cols=165, rows=55,
                      pixels=pixels, env=env) as s:
@@ -257,11 +265,13 @@ def test_config(binary, embedded):
 
     # The example itself should work, with no ambient config loaded.
     example = Path(__file__).resolve().parent.parent / "oops.example.conf"
-    grid = b"162 by 52" if embedded else b"164 by 49"
-    check([], b"model grid " + grid + b", cell aspect 0.5000 (assumed), zoom 100%")
+    def named_grid(aspect):
+        cols, rows = model_grid(frame, 165, 55, aspect)
+        return f"model grid {cols} by {rows}".encode()
+
+    check([], named_grid(0.5) + b", cell aspect 0.5000 (assumed), zoom 100%")
     check(["--config", example], b"duration=30s direction=reverse offset=0%,0% brightness=100%")
-    rows = b"48" if embedded else b"45"
-    check([], b"model grid 164 by " + rows + b", cell aspect 0.4667 (tty pixels), zoom 100%", (1155, 825))
+    check([], named_grid(7 / 15) + b", cell aspect 0.4667 (tty pixels), zoom 100%", (1155, 825))
     check([], b"cell aspect 0.5000 (assumed)", (1155, 0))
 
     with tempfile.TemporaryDirectory() as directory:
@@ -275,8 +285,8 @@ def test_config(binary, embedded):
         default_location.mkdir()
         (default_location / "config").write_text("zoom=150\n", encoding="utf-8")
         check([], b"zoom 100%", env={"XDG_CONFIG_HOME": directory})
-        cols = b"135" if embedded else b"144"
-        check(["--config", config], b"model grid " + cols + b" by 52, cell aspect 0.6000 (configured), zoom 125%")
+        check(["--config", config],
+              named_grid(0.60) + b", cell aspect 0.6000 (configured), zoom 125%")
         check(
             ["--zoom", "85", "--config", config],
             b"cell aspect 0.6000 (configured), zoom 85%",
@@ -339,7 +349,7 @@ def test_config(binary, embedded):
     print("PASS config example, per-setting CLI precedence, pitch source, and startup failures")
 
 
-def test_zoom_resize(binary, embedded):
+def test_zoom_resize(binary, framing):
     for zoom in (50, 200):
         with Session([binary, "--island", "--measure", "--zoom", str(zoom)], cols=165, rows=55,
                      pixels=(1155, 825)) as s:
@@ -369,8 +379,8 @@ def test_zoom_resize(binary, embedded):
             os.write(s.master, b"q")
             raw, err, _ = s.end(0)
             assert_scope(raw)
-            grid = "111x42" if embedded else "111x39"
-            assert f"grid={grid} aspect=0.6000 pitch=tty zoom={zoom}%".encode() in err, err
+            cols, rows = model_grid(framing, 112, 53, 0.60)
+            assert f"grid={cols}x{rows} aspect=0.6000 pitch=tty zoom={zoom}%".encode() in err, err
     print("PASS zoom endpoints survive pixel-only, wider, and narrower TTY resizes")
 
 
@@ -553,10 +563,9 @@ def test_inline_shell(binary):
     print("PASS inline repeated normal-shell runs restore q/Ctrl-C; prior output and next command remain")
 
 
-def test_standard_sizes(binary, embedded):
-    profiles = [(80, 24), (120, 30), (132, 43)]
-    expected = [(56, 18), (68, 22), (100, 32)] if embedded else [(60, 18), (73, 22), (106, 32)]
-    for (cols, rows), (grid_cols, grid_rows) in zip(profiles, expected):
+def test_standard_sizes(binary, framing):
+    for cols, rows in ((80, 24), (116, 41), (120, 30), (132, 43)):
+        grid_cols, grid_rows = model_grid(framing, cols, rows, inline=True)
         with Session([binary, "--check"], cols=cols, rows=rows) as s:
             raw, err, _ = s.end(0)
             assert f"model grid {grid_cols} by {grid_rows}".encode() in raw
@@ -582,7 +591,7 @@ def test_standard_sizes(binary, embedded):
                 assert positions and all(top <= int(y) <= rows and 1 <= int(x) <= cols
                                          for y, x in positions)
                 assert raw.count("•".encode()) >= 20
-    print("PASS 80×24, 120×30, and 132×43 draw bounded art in inline and Island modes")
+    print("PASS 80×24, 116×41, 120×30, and 132×43 draw bounded art in inline and Island modes")
 
 
 def tests(binary, *, full, strict):
@@ -611,10 +620,17 @@ def tests(binary, *, full, strict):
     print("PASS plain help, version, args and redirected stdout")
 
     embedded = b"This build plays embedded review." in subprocess.check_output([binary, "--help"])
-    test_config(binary, embedded)
-    test_zoom_resize(binary, embedded)
+    with Session([binary, "--check"]) as s:
+        out, err, _ = s.end(0)
+        assert not err
+        report = re.search(rb"frame=([0-9.]+)x([0-9.]+)", out)
+        assert report, out
+        framing = tuple(float(value) for value in report.groups())
+        assert min(framing) > 0
+    test_config(binary, framing)
+    test_zoom_resize(binary, framing)
     test_playback_controls(binary)
-    test_standard_sizes(binary, embedded)
+    test_standard_sizes(binary, framing)
 
     for cols, rows in [(79, 24), (80, 23), (0, 0)]:
         with Session([binary], cols=cols, rows=rows) as s:

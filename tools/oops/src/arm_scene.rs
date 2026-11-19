@@ -5,7 +5,7 @@ use crate::projection::Projection;
 use crate::settings::{CellAspect, MAX_ASPECT, MIN_ASPECT, Settings};
 #[cfg(not(goodhand_embedded_playback))]
 use goodhand::ArmSampler;
-#[cfg(goodhand_embedded_playback)]
+#[cfg(all(test, goodhand_embedded_playback))]
 use goodhand::RasterSpec;
 use std::io::{self, Write as _};
 use std::time::{Duration, Instant};
@@ -17,7 +17,7 @@ pub const CONTENT_LABEL: &str = crate::archived_scene::LABEL;
 #[cfg(not(goodhand_embedded_playback))]
 pub const CONTENT_LABEL: &str = "procedural arm";
 
-#[cfg(goodhand_embedded_playback)]
+#[cfg(all(test, goodhand_embedded_playback))]
 const FRAME_SIZE: (f64, f64) = (
     RasterSpec::REFERENCE.width as f64,
     RasterSpec::REFERENCE.height as f64,
@@ -94,17 +94,24 @@ pub struct Layout {
     pub pitch: PitchSource,
     pub settings: Settings,
     display: Display,
+    frame_size: (f64, f64),
     left: u16,
     top: u16,
     inline: Option<InlineRows>,
 }
 
 impl Layout {
+    #[cfg(test)]
     pub fn fit(display: Display, settings: Settings) -> Self {
-        Self::for_surface(display, settings, None)
+        Self::for_surface(display, settings, FRAME_SIZE, None)
     }
 
-    pub fn for_surface(display: Display, settings: Settings, inline: Option<InlineRows>) -> Self {
+    pub fn for_surface(
+        display: Display,
+        settings: Settings,
+        frame_size: (f64, f64),
+        inline: Option<InlineRows>,
+    ) -> Self {
         debug_assert!(display.size.fits());
         let Size { cols, rows } = display.size;
         let (px, py) = display.pixels;
@@ -129,7 +136,7 @@ impl Layout {
         let available_rows = inline.map_or((rows - 3).min(MAX_ROWS), |area| {
             (area.below - area.top).min(inline_height)
         });
-        let ratio = FRAME_SIZE.0 / (FRAME_SIZE.1 * aspect);
+        let ratio = frame_size.0 / (frame_size.1 * aspect);
         let picture_cols = available_cols.min((f64::from(available_rows) * ratio).floor() as u16);
         let picture_rows = available_rows.min((f64::from(available_cols) / ratio).floor() as u16);
         Self {
@@ -139,6 +146,7 @@ impl Layout {
             pitch,
             settings,
             display,
+            frame_size,
             left: 1 + (cols - 1 - picture_cols) / 2,
             top: inline.map_or_else(|| 2 + (rows - 3 - picture_rows) / 2, |area| area.top),
             inline,
@@ -149,7 +157,7 @@ impl Layout {
         Projection::new(
             usize::from(self.cols),
             usize::from(self.rows),
-            FRAME_SIZE,
+            self.frame_size,
             self.aspect,
             self.settings.zoom.factor(),
             self.settings.offset,
@@ -176,6 +184,13 @@ impl Painter {
             old_layout: None,
             needs_resync: false,
         })
+    }
+
+    pub fn frame_size(&self) -> (f64, f64) {
+        #[cfg(goodhand_embedded_playback)]
+        return self.archive.frame_size();
+        #[cfg(not(goodhand_embedded_playback))]
+        FRAME_SIZE
     }
 
     pub fn paint(
@@ -415,8 +430,8 @@ mod tests {
         };
         let mut painter = Painter::new().unwrap();
         let mut packet = Vec::new();
-        let first = Layout::fit(before, settings);
-        let second = Layout::fit(after, settings);
+        let first = Layout::for_surface(before, settings, painter.frame_size(), None);
+        let second = Layout::for_surface(after, settings, painter.frame_size(), None);
         assert_eq!(
             Layout {
                 display: after,
@@ -443,7 +458,7 @@ mod tests {
         };
         let mut current = Painter::new().unwrap();
         let mut packet = Vec::new();
-        let layout = Layout::fit(d, Settings::default());
+        let layout = Layout::for_surface(d, Settings::default(), current.frame_size(), None);
         current.paint(0, layout, &mut packet).unwrap();
         current.submitted(layout);
         current.paint(1, layout, &mut packet).unwrap();
@@ -473,7 +488,7 @@ mod tests {
         };
         let mut p = Painter::new().unwrap();
         let mut first = Vec::new();
-        let layout = Layout::fit(d, Settings::default());
+        let layout = Layout::for_surface(d, Settings::default(), p.frame_size(), None);
         p.paint(0, layout, &mut first).unwrap();
         let old = p.new.clone();
         p.submitted(layout);
