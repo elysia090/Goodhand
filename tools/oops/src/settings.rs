@@ -1,4 +1,5 @@
-//! Startup framing settings. Nothing is looked up unless --config names a file.
+//! Startup playback and framing settings. Nothing is looked up unless --config names a file.
+use crate::playback::{Cycle, CycleDuration, Direction};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -58,10 +59,73 @@ impl FromStr for CellAspect {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Offset(i8);
+
+impl Offset {
+    pub fn percent(self) -> i8 {
+        self.0
+    }
+
+    pub fn fraction(self) -> f64 {
+        f64::from(self.0) / 100.0
+    }
+}
+
+impl FromStr for Offset {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value
+            .parse::<i8>()
+            .ok()
+            .filter(|value| (-50..=50).contains(value))
+            .map(Self)
+            .ok_or("expected an integer percentage from -50 to 50")
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Brightness(u8);
+
+impl Default for Brightness {
+    fn default() -> Self {
+        Self(100)
+    }
+}
+
+impl Brightness {
+    pub fn percent(self) -> u8 {
+        self.0
+    }
+
+    pub fn apply(self, value: u8) -> u8 {
+        // Maximum intermediate: 255 * 200 + 50, which fits u16.
+        let adjusted = (u16::from(value) * u16::from(self.0) + 50) / 100;
+        adjusted.min(u16::from(u8::MAX)) as u8
+    }
+}
+
+impl FromStr for Brightness {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value
+            .parse::<u8>()
+            .ok()
+            .filter(|value| *value <= 200)
+            .map(Self)
+            .ok_or("expected an integer percentage from 0 to 200")
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
     pub zoom: Zoom,
     pub cell_aspect: CellAspect,
+    pub cycle: Cycle,
+    pub offset: [Offset; 2],
+    pub brightness: Brightness,
 }
 
 impl Default for Settings {
@@ -69,7 +133,23 @@ impl Default for Settings {
         Self {
             zoom: Zoom::FIT,
             cell_aspect: CellAspect::Auto,
+            cycle: Cycle::default(),
+            offset: [Offset::default(); 2],
+            brightness: Brightness::default(),
         }
+    }
+}
+
+impl Settings {
+    pub fn playback_status(self) -> String {
+        format!(
+            "duration={}s direction={} offset={}%,{}% brightness={}%",
+            self.cycle.duration.seconds(),
+            self.cycle.direction,
+            self.offset[0].percent(),
+            self.offset[1].percent(),
+            self.brightness.percent(),
+        )
     }
 }
 
@@ -77,6 +157,11 @@ impl Default for Settings {
 pub struct Overrides {
     zoom: Option<Zoom>,
     cell_aspect: Option<CellAspect>,
+    duration: Option<CycleDuration>,
+    direction: Option<Direction>,
+    offset_x: Option<Offset>,
+    offset_y: Option<Offset>,
+    brightness: Option<Brightness>,
 }
 
 impl Overrides {
@@ -84,15 +169,63 @@ impl Overrides {
         Settings {
             zoom: self.zoom.unwrap_or(defaults.zoom),
             cell_aspect: self.cell_aspect.unwrap_or(defaults.cell_aspect),
+            cycle: Cycle {
+                duration: self.duration.unwrap_or(defaults.cycle.duration),
+                direction: self.direction.unwrap_or(defaults.cycle.direction),
+            },
+            offset: [
+                self.offset_x.unwrap_or(defaults.offset[0]),
+                self.offset_y.unwrap_or(defaults.offset[1]),
+            ],
+            brightness: self.brightness.unwrap_or(defaults.brightness),
         }
     }
 
-    pub fn set_zoom(&mut self, value: &str) -> Result<(), &'static str> {
-        set(&mut self.zoom, value)
+    pub fn set(&mut self, key: Key, value: &str) -> Result<(), &'static str> {
+        match key {
+            Key::Zoom => set(&mut self.zoom, value),
+            Key::CellAspect => set(&mut self.cell_aspect, value),
+            Key::Duration => set(&mut self.duration, value),
+            Key::Direction => set(&mut self.direction, value),
+            Key::OffsetX => set(&mut self.offset_x, value),
+            Key::OffsetY => set(&mut self.offset_y, value),
+            Key::Brightness => set(&mut self.brightness, value),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum Key {
+    Zoom,
+    CellAspect,
+    Duration,
+    Direction,
+    OffsetX,
+    OffsetY,
+    Brightness,
+}
+
+impl Key {
+    const NAMES: [(Self, &'static str, &'static str); 7] = [
+        (Self::Zoom, "--zoom", "zoom"),
+        (Self::CellAspect, "--cell-aspect", "cell_aspect"),
+        (Self::Duration, "--duration", "duration"),
+        (Self::Direction, "--direction", "direction"),
+        (Self::OffsetX, "--offset-x", "offset_x"),
+        (Self::OffsetY, "--offset-y", "offset_y"),
+        (Self::Brightness, "--brightness", "brightness"),
+    ];
+
+    pub fn from_flag(flag: &str) -> Option<Self> {
+        Self::NAMES
+            .iter()
+            .find_map(|&(key, name, _)| (flag == name).then_some(key))
     }
 
-    pub fn set_cell_aspect(&mut self, value: &str) -> Result<(), &'static str> {
-        set(&mut self.cell_aspect, value)
+    fn from_config(name: &str) -> Option<Self> {
+        Self::NAMES
+            .iter()
+            .find_map(|&(key, _, entry)| (name == entry).then_some(key))
     }
 }
 
@@ -120,12 +253,11 @@ fn parse_config(source: &str) -> Result<Overrides, String> {
             .ok_or_else(|| format!("line {location}: expected key = value"))?;
         let key = key.trim();
         let value = value.trim();
-        let result = match key {
-            "zoom" => settings.set_zoom(value),
-            "cell_aspect" => settings.set_cell_aspect(value),
-            _ => return Err(format!("line {location}: unknown key {key:?}")),
-        };
-        result.map_err(|message| format!("line {location}: {key}: {message}"))?;
+        let setting =
+            Key::from_config(key).ok_or_else(|| format!("line {location}: unknown key {key:?}"))?;
+        settings
+            .set(setting, value)
+            .map_err(|message| format!("line {location}: {key}: {message}"))?;
     }
     Ok(settings)
 }
@@ -205,6 +337,52 @@ mod tests {
                 "{source}"
             );
         }
+    }
+
+    #[test]
+    fn playback_overrides_are_independent_and_bounded() {
+        let file =
+            parse_config("duration=12\ndirection=forward\noffset_x=-50\noffset_y=50\nbrightness=0")
+                .unwrap()
+                .apply(Settings::default());
+        let cli = parse_config("duration=60\noffset_y=-35\nbrightness=200")
+            .unwrap()
+            .apply(file);
+        assert_eq!(file.cycle.duration.seconds(), 12);
+        assert_eq!(file.brightness.percent(), 0);
+        assert_eq!(cli.cycle.duration.seconds(), 60);
+        assert_eq!(cli.cycle.direction, Direction::Forward);
+        assert_eq!(cli.offset.map(Offset::percent), [-50, -35]);
+        assert_eq!(cli.brightness.percent(), 200);
+        for source in [
+            "duration=11",
+            "duration=61",
+            "duration=12.5",
+            "direction=clockwise",
+            "offset_x=51",
+            "offset_y=-51",
+            "brightness=-1",
+            "brightness=201",
+            "direction=reverse\ndirection=forward",
+        ] {
+            assert!(parse_config(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn gray_gain_is_monotonic_zero_preserving_and_rounded() {
+        for percent in 0..=200 {
+            let gain = Brightness(percent);
+            assert_eq!(gain.apply(0), 0);
+            assert!((0..u8::MAX).all(|gray| gain.apply(gray) <= gain.apply(gray + 1)));
+        }
+        for gray in 0..=u8::MAX {
+            assert_eq!(Brightness::default().apply(gray), gray);
+            assert_eq!(Brightness(0).apply(gray), 0);
+        }
+        assert_eq!(Brightness(50).apply(79), 40);
+        assert_eq!(Brightness(200).apply(79), 158);
+        assert_eq!(Brightness(200).apply(129), 255);
     }
 
     #[test]

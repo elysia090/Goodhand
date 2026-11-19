@@ -4,7 +4,7 @@ use crate::arm_scene::{
     CONTENT_LABEL, Display, Layout, MIN_HEIGHT, MIN_WIDTH, Painter, PitchSource, Size,
 };
 use crate::measurement::{Measurement, Timings};
-use crate::playback::{self, RUN_TIME};
+use crate::playback;
 use crate::settings::Settings;
 use crate::terminal_keys::Termios;
 use std::cell::Cell;
@@ -435,7 +435,8 @@ fn play(
     painter: &mut Painter,
 ) -> io::Result<()> {
     let start = Instant::now();
-    let end = start + RUN_TIME;
+    let cycle = settings.cycle;
+    let end = start + cycle.length();
     let mut packet = Vec::with_capacity(64_000);
     let mut attempted = None;
     let mut awaiting_output = false;
@@ -443,7 +444,7 @@ fn play(
         if screen.stopping()? {
             return Ok(());
         }
-        let Some(tick) = playback::tick(start.elapsed()) else {
+        let Some(tick) = cycle.tick(start.elapsed()) else {
             return Ok(());
         };
         let observed = screen.terminal.display()?;
@@ -457,7 +458,7 @@ fn play(
             awaiting_output = !screen.terminal.wait_writable()?;
             continue;
         }
-        let next = start + playback::start_of_tick(tick + 1);
+        let next = start + cycle.start_of_tick(tick + 1);
         if attempted != Some(tick) {
             attempted = Some(tick);
             let begin_paint = Instant::now();
@@ -466,7 +467,7 @@ fn play(
             let encode = begin_paint.elapsed().saturating_sub(trace);
             stats.traces += 1;
             // Skip obsolete work, never play a delayed queue.
-            if playback::tick(start.elapsed()) != Some(tick) {
+            if cycle.tick(start.elapsed()) != Some(tick) {
                 stats.stale += 1;
                 continue;
             }
@@ -547,7 +548,7 @@ pub fn run(check_only: bool, measure: bool, settings: Settings) -> u8 {
     if check_only {
         let layout = Layout::fit(display, settings);
         println!(
-            "oops: {} columns by {} rows; model grid {} by {}, cell aspect {:.4} ({}), zoom {}%; content: {CONTENT_LABEL}",
+            "oops: {} columns by {} rows; model grid {} by {}, cell aspect {:.4} ({}), zoom {}%; content: {CONTENT_LABEL}; {}",
             display.size.cols,
             display.size.rows,
             layout.cols,
@@ -557,7 +558,8 @@ pub fn run(check_only: bool, measure: bool, settings: Settings) -> u8 {
                 PitchSource::Measured => "tty pixels",
                 other => other.label(),
             },
-            layout.zoom.percent(),
+            settings.zoom.percent(),
+            settings.playback_status(),
         );
         return 0;
     }
@@ -578,7 +580,7 @@ pub fn run(check_only: bool, measure: bool, settings: Settings) -> u8 {
         original_keys: None,
         quit_pressed: Cell::new(false),
     };
-    let mut stats = Measurement::new(measure);
+    let mut stats = Measurement::new(measure, settings);
     let playback = screen
         .enter()
         .and_then(|()| screen.enable_keys())

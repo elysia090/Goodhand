@@ -8,12 +8,12 @@ Xfce Terminal shell on GNU/Linux x86-64, run:
 
 The minimum terminal is 92 columns × 45 rows with UTF-8, a single-cell
 bullet and true color. Press q or Ctrl-C to stop early. The normal run
-stops on its own after 30 seconds. No config, video, guide, external
+stops on its own after 30 seconds by default. No config, video, guide, external
 artwork, Python, Rust installation or FFmpeg is required at runtime.
 The ELF uses the host's standard GNU/Linux loader and shared libraries.
 
-The review build holds its 288 native poses on the original 24 Hz clock
-(three and two ticks alternately). Occupancy and gray remain separate:
+By default the review build holds its 288 native poses on the 24 Hz clock
+for three and two ticks alternately, in the reviewed direction. Occupancy and gray remain separate:
 black can be occupied. Nothing is fetched or reconstructed during
 playback. The fixed source canvas is sampled onto the terminal's cell
 grid with a uniform physical scale; no arbitrary stretching, contrast
@@ -25,6 +25,7 @@ font, frame submission, or screen refresh.
 
     oops --check --zoom 85
     oops --zoom 120 --cell-aspect 0.4667
+    oops --duration 24 --direction forward --offset-x -10 --brightness 85
     oops --config oops.example.conf --measure
 
 - `--zoom PERCENT` accepts an integer from 50 through 200. At 100 the
@@ -40,20 +41,44 @@ font, frame submission, or screen refresh.
   pass a measured ratio in 0.30–0.85. A manual value takes precedence
   over TTY measurements throughout the run. Recheck it after a font
   change that changes the cell proportions.
+- `--duration SECONDS` selects 12 through 60 whole seconds for one turn.
+  The timeline always runs at 24 Hz. Each archived pose starts at the
+  nearest tick to its equally spaced time (ties round up), so every
+  pose has at least one scheduled tick. A slow terminal may still miss
+  submissions. The procedural developer scene samples the corresponding
+  yaw on each tick.
+- `--direction reverse` (the default) follows the reviewed order.
+  `--direction forward` uses the same opening pose and visits the other
+  poses in reverse order, with the same hold schedule. It does not
+  mirror the image. The last pose precedes the wrap; the opening pose
+  is not replayed at the end.
+- `--offset-x PERCENT` and `--offset-y PERCENT` shift the artwork from
+  center by signed whole percentages, from -50 to 50, of the current
+  drawing grid's width and height, respectively. Positive x moves right;
+  positive y moves down. Shifts are independent of zoom, stay proportional
+  on resize, and can crop at the drawing grid's edges. The header and
+  footer do not move with the picture.
+- `--brightness PERCENT` applies a linear gain of 0 through 200 to
+  each occupied gray code, with integer rounding (ties up) and clipping
+  to 255. The default, 100, is unchanged. At 0, every dot is black;
+  the dots still have occupancy. This does not change terminal
+  brightness, background, or text, and does not restore clipped
+  highlights.
 - No config is required or searched for. Copy
   [`oops.example.conf`](oops.example.conf), adjust the settings, and
   pass the path with `--config PATH`. The file is UTF-8, at most 8 KiB,
-  with optional `zoom` and `cell_aspect` keys, one `key = value` per
-  line. Blank lines, whitespace around entries, and `#` comments are
+  with optional `zoom`, `cell_aspect`, `duration`, `direction`,
+  `offset_x`, `offset_y`, and `brightness` keys, one `key = value`
+  per line. Blank lines, whitespace around entries, and `#` comments are
   allowed. The precedence per setting is command line, explicit file,
   built-in default. Unknown or duplicate keys, invalid values (even
   when overridden), and missing or unreadable explicit files stop
   startup before the app enters its alternate screen.
 
-`--check` prints the compiled content, resolved zoom, aspect source,
+`--check` prints the compiled content, resolved settings, aspect source,
 and drawing grid without entering the alternate screen. `--measure`
-prints the grid, aspect and zoom of the last fully submitted frame
-alongside process timings.
+prints the playback settings and timing, including the grid, aspect,
+and zoom of the last fully submitted frame.
 
 ### Playback and recovery
 
@@ -70,7 +95,7 @@ crossed their tick boundary. When a nonblocking write would block, the
 frame writer waits briefly for output readiness instead of imposing a
 fixed delay before every retry. If a frame exhausts its write budget, the
 player drops it and waits for output readiness without rendering a queue.
-The 30-second deadline, q, resize checks and handled signals still apply.
+The selected duration, q, resize checks and handled signals still apply.
 If any prefix reached the terminal, the next current frame cancels an
 incomplete terminal sequence, clears the owned alternate screen and
 draws the full image rather than continuing the old diff. A usable
@@ -84,8 +109,8 @@ not compositor or display timing.
 ### Developer build and validation
 
 The distribution build embeds only the reviewed 200×120 GHSH occupancy
-and matching GHT8 gray, with 288 poses at 24 Hz. The ordered 30-second hold
-schedule is fixed by the player. Supply the **absolute path** to a verified
+and matching GHT8 gray, with 288 poses at 24 Hz. The default player schedule
+matches the ordered 30-second review. Supply the **absolute path** to a verified
 private directory containing `shape.ghs` and `tone.ght` at build time:
 
     GOODHAND_PLAYBACK_DIR=/absolute/path/to/verified-data \

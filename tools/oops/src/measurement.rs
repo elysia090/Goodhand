@@ -1,5 +1,5 @@
 use crate::arm_scene::Layout;
-use crate::playback::TICKS;
+use crate::settings::Settings;
 use std::time::Duration;
 
 #[derive(Clone, Copy)]
@@ -11,6 +11,7 @@ pub struct Timings {
 
 pub struct Measurement {
     enabled: bool,
+    settings: Settings,
     pub traces: usize,
     pub stale: usize,
     pub late_write: usize,
@@ -22,9 +23,10 @@ pub struct Measurement {
 }
 
 impl Measurement {
-    pub fn new(enabled: bool) -> Self {
+    pub fn new(enabled: bool, settings: Settings) -> Self {
         Self {
             enabled,
+            settings,
             traces: 0,
             stale: 0,
             late_write: 0,
@@ -32,7 +34,11 @@ impl Measurement {
             partial_write: 0,
             bytes: 0,
             layout: None,
-            timings: Vec::with_capacity(if enabled { TICKS as usize } else { 0 }),
+            timings: Vec::with_capacity(if enabled {
+                settings.cycle.ticks() as usize
+            } else {
+                0
+            }),
         }
     }
 
@@ -53,7 +59,7 @@ impl Measurement {
                 l.rows,
                 l.aspect,
                 l.pitch.label(),
-                l.zoom.percent(),
+                l.settings.zoom.percent(),
             )
         });
         let timing = |read: fn(&Timings) -> Duration| {
@@ -70,9 +76,9 @@ impl Measurement {
             format!("{}/{}", p95, times.last().copied().unwrap_or(0))
         };
         Some(format!(
-            "oops: grid={layout} written={}/{} rendered={} stale={} late_write={} dropped_write={} partial_write={} bytes={} trace_p95/max_us={} encode_p95/max_us={} write_p95/max_us={}\n",
+            "oops: grid={layout} written={}/{} rendered={} stale={} late_write={} dropped_write={} partial_write={} bytes={} trace_p95/max_us={} encode_p95/max_us={} write_p95/max_us={} {}\n",
             self.timings.len(),
-            TICKS,
+            self.settings.cycle.ticks(),
             self.traces,
             self.stale,
             self.late_write,
@@ -81,7 +87,8 @@ impl Measurement {
             self.bytes,
             timing(|t| t.trace),
             timing(|t| t.encode),
-            timing(|t| t.write)
+            timing(|t| t.write),
+            self.settings.playback_status(),
         ))
     }
 }

@@ -49,8 +49,9 @@ Run the packaged `oops` executable from a foreground Xfce-compatible
 GNU/Linux x86-64 terminal. `./oops --check` checks the resolved framing.
 `./oops` plays the embedded review on a 30-second timeline; q or Ctrl-C
 stops it early. No media files, config or developer tools are needed to run
-it. See the [terminal guide](tools/oops/README.md) for sizing, optional
-display settings and the developer build that embeds verified content.
+it. The [terminal guide](tools/oops/README.md) covers optional duration,
+direction, position, zoom, and brightness settings, plus how to build
+the executable with verified review content.
 
 ## Checks
 

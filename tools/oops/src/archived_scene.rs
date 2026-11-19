@@ -1,6 +1,7 @@
 //! Display projection of an already-reviewed raster; no geometry or shading.
 use crate::archive_profile::{self, ARCHIVE_FPS, HEIGHT, POSES, WIDTH};
-use crate::playback::{FPS, TICKS};
+use crate::playback::{Cycle, Direction, FPS};
+use crate::projection::Projection;
 use goodhand::{RasterSpec, Sequence, ToneSequence};
 use std::io;
 
@@ -37,8 +38,7 @@ impl Archive {
         })
     }
 
-    fn select(&mut self, tick: u64) -> io::Result<()> {
-        let index = pose_at_tick(tick).ok_or_else(|| io::Error::other("invalid playback tick"))?;
+    fn select(&mut self, index: u32) -> io::Result<()> {
         if self.last_pose == Some(index) {
             return Ok(());
         }
@@ -67,27 +67,24 @@ impl Archive {
         Ok(())
     }
 
-    pub fn project(&mut self, tick: u64, view: View, output: &mut [Option<u8>]) -> io::Result<()> {
-        if view.cols == 0
-            || view.rows == 0
-            || view.cols.checked_mul(view.rows) != Some(output.len())
-            || !view.aspect.is_finite()
-            || view.aspect <= 0.0
-            || !view.zoom.is_finite()
-            || view.zoom <= 0.0
-        {
+    pub fn project(
+        &mut self,
+        cycle: Cycle,
+        tick: u64,
+        view: Projection,
+        output: &mut [Option<u8>],
+    ) -> io::Result<()> {
+        if view.cols * view.rows != output.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "invalid archive viewport",
+                "archive viewport does not match output length",
             ));
         }
-        self.select(tick)?;
+        let index =
+            pose_at_tick(cycle, tick).ok_or_else(|| io::Error::other("invalid playback tick"))?;
+        self.select(index)?;
         let spec = RasterSpec::REFERENCE;
         let (w, h) = (spec.width as f64, spec.height as f64);
-        // A single physical scale on both axes. Fitting the full source
-        // canvas keeps its margins; zoom crops around the same center.
-        let dy = (h / view.rows as f64).max(w / (view.cols as f64 * view.aspect)) / view.zoom;
-        let dx = dy * view.aspect;
         // Each terminal bullet represents a logical dot's region. Region
         // boundaries lie halfway between dot centers, not at a tone cutoff.
         let source_index = |point: f64, axis: usize, count: u16| {
@@ -97,13 +94,10 @@ impl Archive {
             let index = ((point - origin) / pitch).floor();
             (index >= 0.0 && index < f64::from(count)).then_some(index as usize)
         };
-        let center = |index, count, step, size| {
-            size / 2.0 + (index as f64 + 0.5 - count as f64 / 2.0) * step
-        };
         for (r, row) in output.chunks_exact_mut(view.cols).enumerate() {
-            let y = source_index(center(r, view.rows, dy, h), 1, HEIGHT);
+            let y = source_index(h / 2.0 + view.y(r), 1, HEIGHT);
             for (c, cell) in row.iter_mut().enumerate() {
-                let x = source_index(center(c, view.cols, dx, w), 0, WIDTH);
+                let x = source_index(w / 2.0 + view.x(c), 0, WIDTH);
                 *cell = y
                     .zip(x)
                     .and_then(|(y, x)| self.points[y * usize::from(WIDTH) + x]);
@@ -113,18 +107,18 @@ impl Archive {
     }
 }
 
-pub struct View {
-    pub cols: usize,
-    pub rows: usize,
-    pub aspect: f64,
-    pub zoom: f64,
-}
-
-pub(super) fn pose_at_tick(tick: u64) -> Option<u32> {
-    // Invert the half-up pose boundaries used by the fixed-grid review.
-    // Unlike a linear interpolation, this holds the original poses for
-    // alternating three and two 24 Hz ticks in the exact 30-second cycle.
-    (tick < TICKS).then(|| ((u64::from(POSES) * (2 * tick + 1) - 1) / (2 * TICKS)) as u32)
+fn pose_at_tick(cycle: Cycle, tick: u64) -> Option<u32> {
+    let ticks = cycle.ticks();
+    if tick >= ticks {
+        return None;
+    }
+    // Invert the half-up review boundaries: pose p starts at
+    // round(p * ticks / POSES). 30 seconds preserves the exact 3/2 holds.
+    let pose = ((u64::from(POSES) * (2 * tick + 1) - 1) / (2 * ticks)) as u32;
+    Some(match cycle.direction {
+        Direction::Reverse => pose,
+        Direction::Forward => (POSES - pose) % POSES,
+    })
 }
 
 #[cfg(test)]
@@ -161,74 +155,119 @@ mod tests {
     }
 
     #[test]
-    fn every_pose_uses_the_exact_review_clock_and_ends_at_tick_720() {
-        assert_eq!(TICKS, 720);
-        let mut progression = Vec::new();
-        for tick in 0..TICKS {
-            progression.push(pose_at_tick(tick).unwrap());
+    fn default_pose_schedule_keeps_every_original_hold() {
+        let cycle = Cycle::default();
+        assert_eq!(cycle.ticks(), 720);
+        let mut tick = 0;
+        for pose in 0..POSES {
+            for _ in 0..if pose % 2 == 0 { 3 } else { 2 } {
+                assert_eq!(pose_at_tick(cycle, tick), Some(pose));
+                tick += 1;
+            }
         }
-        let mut next = 0;
-        for p in 0..POSES {
-            let hold = if p % 2 == 0 { 3 } else { 2 };
-            assert_eq!(progression[next..next + hold], vec![p; hold]);
-            next += hold;
+        assert_eq!(tick, 720);
+        assert_eq!(pose_at_tick(cycle, 720), None);
+        assert_eq!(pose_at_tick(cycle, u64::MAX), None);
+    }
+
+    #[test]
+    fn all_durations_keep_each_pose_and_both_directions_start_at_zero() {
+        let poses = u64::from(POSES);
+        for seconds in 12..=60 {
+            let reverse = Cycle {
+                duration: seconds.to_string().parse().unwrap(),
+                ..Cycle::default()
+            };
+            let forward = Cycle {
+                direction: Direction::Forward,
+                ..reverse
+            };
+            let ticks = reverse.ticks();
+            let boundary = |pose| (pose * ticks + poses / 2) / poses;
+            for pose in 0..poses {
+                let start = boundary(pose);
+                let end = boundary(pose + 1);
+                assert!(start < end);
+                for tick in start..end {
+                    assert_eq!(pose_at_tick(reverse, tick), Some(pose as u32));
+                    assert_eq!(
+                        pose_at_tick(forward, tick),
+                        Some(((poses - pose) % poses) as u32)
+                    );
+                }
+            }
+            assert_eq!(pose_at_tick(forward, 0), Some(0));
+            assert_eq!(pose_at_tick(forward, ticks - 1), Some(1));
+            assert_eq!(pose_at_tick(forward, ticks), None);
         }
-        assert_eq!(next, 720);
-        assert_eq!(pose_at_tick(720), None);
-        assert_eq!(pose_at_tick(u64::MAX), None);
+    }
+
+    fn grid(cols: usize, rows: usize, aspect: f64, zoom: f64, x: &str, y: &str) -> Projection {
+        Projection::new(
+            cols,
+            rows,
+            (1000.0, 640.0),
+            aspect,
+            zoom,
+            [x.parse().unwrap(), y.parse().unwrap()],
+        )
+        .unwrap()
     }
 
     #[test]
     fn review_projection_preserves_black_occupancy_and_maps_native_grid_centers() {
         let mut archive = fixture();
-        // 1000×640 canvas sampled at 5px square cells. The first source
-        // row is below eight canvas rows of margin, and row 1 is at 9.
-        let view = || View {
-            cols: 200,
-            rows: 128,
-            aspect: 1.0,
-            zoom: 1.0,
-        };
+        let cycle = Cycle::default();
+        // The first source row lies below eight rows of output margin.
+        let view = grid(200, 128, 1.0, 1.0, "0", "0");
         let mut pixels = vec![None; 200 * 128];
-        archive.project(0, view(), &mut pixels).unwrap();
+        archive.project(cycle, 0, view, &mut pixels).unwrap();
         assert_eq!(
             pixels[9 * 200 + 7..9 * 200 + 11],
             [None, Some(0), Some(79), None]
         );
         assert_eq!(pixels.iter().filter(|p| p.is_some()).count(), 2);
-        archive.project(2, view(), &mut pixels).unwrap();
+        archive.project(cycle, 2, view, &mut pixels).unwrap();
         assert_eq!(pixels[9 * 200 + 9], Some(79));
-        archive.project(3, view(), &mut pixels).unwrap();
+        archive.project(cycle, 3, view, &mut pixels).unwrap();
         assert_eq!(pixels[9 * 200 + 9], Some(190));
-        // Resizing/revisiting earlier ticks cannot retain a stale pose.
-        archive.project(0, view(), &mut pixels).unwrap();
+        // Forward starts at zero, runs through pose 287, then ends at pose 1.
+        let forward = Cycle {
+            direction: Direction::Forward,
+            ..cycle
+        };
+        archive.project(forward, 3, view, &mut pixels).unwrap();
         assert_eq!(pixels[9 * 200 + 9], Some(79));
-        assert!(archive.project(720, view(), &mut pixels).is_err());
+        archive.project(forward, 719, view, &mut pixels).unwrap();
+        assert_eq!(pixels[9 * 200 + 9], Some(190));
+        assert!(archive.project(cycle, 720, view, &mut pixels).is_err());
     }
 
     #[test]
-    fn non_square_cells_and_zoom_use_one_physical_scale_about_the_canvas_center() {
+    fn crop_and_translation_do_not_stretch_either_axis() {
         let mut archive = fixture();
         let mut pixels = vec![None; 200 * 64];
-        let view = View {
-            cols: 200,
-            rows: 64,
-            aspect: 0.5,
-            zoom: 1.0,
-        };
-        archive.project(0, view, &mut pixels).unwrap();
+        let cycle = Cycle::default();
+        let view = grid(200, 64, 0.5, 1.0, "0", "0");
+        archive.project(cycle, 0, view, &mut pixels).unwrap();
         assert_eq!(
             pixels[4 * 200 + 7..4 * 200 + 11],
             [None, Some(0), Some(79), None]
         );
-        let zoomed_out = View {
-            cols: 200,
-            rows: 128,
-            aspect: 1.0,
-            zoom: 0.5,
-        };
+        let shifted = grid(200, 64, 0.5, 1.0, "25", "25");
+        archive.project(cycle, 0, shifted, &mut pixels).unwrap();
+        assert_eq!(
+            pixels[20 * 200 + 57..20 * 200 + 61],
+            [None, Some(0), Some(79), None]
+        );
+        assert_eq!(pixels.iter().filter(|p| p.is_some()).count(), 2);
+        let cropped = grid(200, 64, 0.5, 1.0, "-25", "-25");
+        archive.project(cycle, 0, cropped, &mut pixels).unwrap();
+        assert!(pixels.iter().all(Option::is_none));
+
+        let zoomed_out = grid(200, 128, 1.0, 0.5, "0", "0");
         let mut smaller = vec![None; 200 * 128];
-        archive.project(0, zoomed_out, &mut smaller).unwrap();
+        archive.project(cycle, 0, zoomed_out, &mut smaller).unwrap();
         assert_eq!(
             smaller[36 * 200 + 53..36 * 200 + 56],
             [None, Some(79), None]
@@ -239,21 +278,32 @@ mod tests {
     fn invalid_viewport_returns_without_overwriting_output() {
         let mut archive = fixture();
         let mut out = [Some(37)];
-        for (cols, rows, aspect, zoom) in [
-            (0, 1, 0.5, 1.0),
-            (2, 1, 0.5, 1.0),
-            (1, 1, f64::NAN, 1.0),
-            (1, 1, 0.5, 0.0),
-        ] {
-            let view = View {
-                cols,
-                rows,
-                aspect,
-                zoom,
-            };
-            assert!(archive.project(0, view, &mut out).is_err());
-            assert_eq!(out, [Some(37)]);
+        for (cols, rows, aspect, zoom) in
+            [(0, 1, 0.5, 1.0), (1, 1, f64::NAN, 1.0), (1, 1, 0.5, 0.0)]
+        {
+            assert!(
+                Projection::new(
+                    cols,
+                    rows,
+                    (1000.0, 640.0),
+                    aspect,
+                    zoom,
+                    Default::default()
+                )
+                .is_err()
+            );
         }
+        assert!(
+            archive
+                .project(
+                    Cycle::default(),
+                    0,
+                    grid(2, 1, 0.5, 1.0, "0", "0"),
+                    &mut out
+                )
+                .is_err()
+        );
+        assert_eq!(out, [Some(37)]);
     }
 
     #[cfg(goodhand_embedded_playback)]

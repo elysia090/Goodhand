@@ -5,6 +5,7 @@ mod archived_scene;
 mod arm_scene;
 mod measurement;
 mod playback;
+mod projection;
 mod settings;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
@@ -12,7 +13,7 @@ mod terminal;
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
 mod terminal_keys;
 
-use settings::Overrides;
+use settings::{Key, Overrides};
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
 use settings::{Settings, read_config};
 use std::ffi::OsString;
@@ -21,12 +22,12 @@ use std::process::ExitCode;
 
 const HELP: &str = "oops 0.0.1\n\
 \n\
-Play one 30-second arm rotation on a 24 Hz timeline.\n\
+Play one arm rotation on a 24 Hz timeline (30 seconds by default).\n\
 Pilot target: a foreground Xfce/VTE-compatible Linux terminal,\n\
 with UTF-8, true color, and at least 92 columns by 45 rows.\n\
 Run from the normal shell screen. Press q or Ctrl-C to exit.\n\
 \n\
-Usage: oops [--check | --measure] [--config PATH] [--zoom PERCENT] [--cell-aspect ASPECT]\n\
+Usage: oops [--check | --measure] [--config PATH] [OPTIONS]\n\
        oops --help | --version\n\
 \n\
   --check               Check terminal preconditions and display geometry.\n\
@@ -34,10 +35,15 @@ Usage: oops [--check | --measure] [--config PATH] [--zoom PERCENT] [--cell-aspec
   --config PATH         Read optional display settings from this file only.\n\
   --zoom PERCENT        50–200; 100 fits the model frame, above 100 may crop.\n\
   --cell-aspect ASPECT  auto (default) or cell width/height from 0.30 to 0.85.\n\
+  --duration SECONDS    12–60 whole seconds (default 30).\n\
+  --direction DIRECTION reverse (default) or forward, same opening pose.\n\
+  --offset-x PERCENT    -50 to 50 of drawing width; positive moves right.\n\
+  --offset-y PERCENT    -50 to 50 of drawing height; positive moves down.\n\
+  --brightness PERCENT  0–200; 100 leaves original gray unchanged.\n\
   --help, -h            Print this help.\n\
   --version, -V         Print the version.\n\
 \n\
-Command-line display settings override the corresponding config values.\n";
+Command-line options override the corresponding config values.\n";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Mode {
@@ -77,20 +83,22 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Options, Strin
                 options.config = Some(value(&mut args, "--config")?.into());
                 continue;
             }
-            Some(option @ ("--zoom" | "--cell-aspect")) => {
+            option => {
+                let Some((option, key)) =
+                    option.and_then(|name| Key::from_flag(name).map(|key| (name, key)))
+                else {
+                    return Err(format!("unknown option {arg:?}; see --help"));
+                };
                 let input = value(&mut args, option)?;
                 let input = input
                     .to_str()
                     .ok_or_else(|| format!("{option}: expected UTF-8 text"))?;
-                let result = if option == "--zoom" {
-                    options.overrides.set_zoom(input)
-                } else {
-                    options.overrides.set_cell_aspect(input)
-                };
-                result.map_err(|reason| format!("{option}: {reason}"))?;
+                options
+                    .overrides
+                    .set(key, input)
+                    .map_err(|reason| format!("{option}: {reason}"))?;
                 continue;
             }
-            _ => return Err(format!("unknown option {arg:?}; see --help")),
         };
         if options.mode != Mode::Play {
             return Err("choose only one of --check, --measure, --help, or --version".into());
@@ -177,6 +185,14 @@ mod tests {
         for args in [
             &["--help", "--check"][..],
             &["--duration=10"],
+            &["--duration", "11"],
+            &["--duration", "61"],
+            &["--duration", "12.0"],
+            &["--direction", "left"],
+            &["--offset-x", "-51"],
+            &["--offset-y", "51"],
+            &["--brightness", "201"],
+            &["--brightness", "100", "--brightness", "150"],
             &["--version", "--config", "oops.conf"],
             &["--config", "one", "--config", "two"],
             &["--config", "--zoom", "125"],

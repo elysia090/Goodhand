@@ -17,7 +17,7 @@ from pathlib import Path
 ENTER = b"\x1b[?1049h"
 LEAVE = b"\x18\x1b[0m\x1b[?1049l"
 RESYNC = b"\x18\x1b[0m\x1b[48;2;0;0;0m\x1b[2J"
-TICK = re.compile(rb" / tick (\d{3})")
+TICK = re.compile(rb" / tick (\d{3,4})(?=\x1b)")
 FOREIGN = (b"\x1b[?25", b"\x1b[?7", b"\x1b]")
 
 ENV = os.environ | {
@@ -245,14 +245,18 @@ def test_config(binary, embedded):
     example = Path(__file__).resolve().parent.parent / "oops.example.conf"
     grid = b"162 by 52" if embedded else b"164 by 49"
     check([], b"model grid " + grid + b", cell aspect 0.5000 (assumed), zoom 100%")
-    check(["--config", example], b"cell aspect 0.5000 (assumed), zoom 100%")
+    check(["--config", example], b"duration=30s direction=reverse offset=0%,0% brightness=100%")
     rows = b"48" if embedded else b"45"
     check([], b"model grid 164 by " + rows + b", cell aspect 0.4667 (tty pixels), zoom 100%", (1155, 825))
     check([], b"cell aspect 0.5000 (assumed)", (1155, 0))
 
     with tempfile.TemporaryDirectory() as directory:
         config = Path(directory) / "display settings.conf"
-        config.write_text("zoom=125\ncell_aspect=0.60\n", encoding="utf-8")
+        config.write_text(
+            "zoom=125\ncell_aspect=0.60\nduration=50\ndirection=forward\n"
+            "offset_x=-10\noffset_y=15\nbrightness=125\n",
+            encoding="utf-8",
+        )
         default_location = Path(directory) / "oops"
         default_location.mkdir()
         (default_location / "config").write_text("zoom=150\n", encoding="utf-8")
@@ -273,12 +277,25 @@ def test_config(binary, embedded):
             b"cell aspect 0.7500 (configured), zoom 200%",
             (1155, 825),
         )
+        check(
+            ["--config", config],
+            b"duration=50s direction=forward offset=-10%,15% brightness=125%",
+        )
+        check(
+            ["--duration", "60", "--direction", "reverse", "--offset-x", "30",
+             "--offset-y", "-50", "--brightness", "0", "--config", config],
+            b"duration=60s direction=reverse offset=30%,-50% brightness=0%",
+        )
         for source, expected in [
             (None, b"No such file"),
             (b"zoom=125\nunknown=1\n", b'line 2: unknown key "unknown"'),
             (b"zoom=125\nzoom=150\n", b"line 2: zoom: specified more than once"),
             (b"zoom=201\n", b"line 1: zoom: expected"),
             (b"cell_aspect=NaN\n", b"line 1: cell_aspect: expected"),
+            (b"duration=61\n", b"line 1: duration: expected"),
+            (b"direction=left\n", b"line 1: direction: expected"),
+            (b"offset_x=-51\n", b"line 1: offset_x: expected"),
+            (b"brightness=201\n", b"line 1: brightness: expected"),
             (b"\xff", b"file must be UTF-8"),
             (b"#" * 8193, b"file exceeds 8192 bytes"),
         ]:
@@ -343,6 +360,66 @@ def test_zoom_resize(binary, embedded):
     print("PASS zoom endpoints survive pixel-only, wider, and narrower TTY resizes")
 
 
+def opening_cells(binary, options):
+    """Decode occupied cells in one complete wire frame, not its appearance."""
+    marker = b"\x1b[65;1H"
+    with Session([binary, "--zoom", "50", "--cell-aspect", "0.60", *options],
+                 cols=121, rows=65) as s:
+        s.until(marker)
+        os.write(s.master, b"q")
+        raw, err, _ = s.end(0)
+        assert_scope(raw)
+        frame = raw[:raw.index(marker) + len(marker)]
+        assert TICK.findall(frame) == [b"000"] and not err, (frame[-80:], err)
+    occupied = {}
+    row = col = gray = None
+    for token in re.split(rb"(\x1b\[[0-9;?]*[A-Za-z])", frame):
+        if token.startswith(b"\x1b["):
+            if token.endswith(b"H"):
+                row, col = map(int, token[2:-1].split(b";"))
+            elif token.startswith(b"\x1b[38;2;"):
+                red, green, blue = map(int, token[7:-1].split(b";"))
+                assert red == green == blue
+                gray = red
+        else:
+            for char in token.decode("utf-8"):
+                if char == "•":
+                    occupied[row, col] = gray
+                col += 1
+    assert occupied
+    return occupied
+
+
+def test_playback_controls(binary):
+    centered = opening_cells(binary, [])
+    forward = opening_cells(binary, ["--direction", "forward", "--duration", "12"])
+    assert forward == centered, "direction or duration changed the opening pose"
+
+    dark = opening_cells(binary, ["--brightness", "0"])
+    assert dark == dict.fromkeys(centered, 0), "zero gain changed dot occupancy"
+
+    shifted = opening_cells(binary, ["--brightness", "200", "--offset-x", "10"])
+    # Both scenes fit all 120 columns in this viewport. A 10% move adds
+    # exactly 12 columns; 50% zoom leaves enough room not to crop artwork.
+    assert shifted == {(row, col + 12): min(255, gray * 2)
+                       for (row, col), gray in centered.items()}
+    print("PASS playback direction/duration opening parity, gray gain, and artwork-only offset")
+
+
+def test_custom_duration(binary):
+    with Session([binary, "--measure", "--duration", "12", "--direction", "forward"],
+                 cols=121, rows=65) as s:
+        raw, err, elapsed = s.end(0, timeout=15)
+        assert_scope(raw)
+        ticks = [int(value) for value in TICK.findall(raw)]
+        assert ticks == sorted(set(ticks)) and ticks[0] <= 3 and 284 <= ticks[-1] < 288
+        assert b"12 seconds / q or Ctrl-C" in raw
+        assert re.search(rb"written=\d+/288\b", err)
+        assert b"duration=12s direction=forward" in err
+        assert 11.9 <= elapsed < 15, elapsed
+    print(f"PASS 12-second forward completion: {elapsed:.6f} s, {len(ticks)}/288 ticks")
+
+
 def tests(binary, *, full, strict):
     for args, code, out in [
         (["--help"], 0, b"Usage: oops"),
@@ -370,6 +447,7 @@ def tests(binary, *, full, strict):
     embedded = b"This build plays embedded review." in subprocess.check_output([binary, "--help"])
     test_config(binary, embedded)
     test_zoom_resize(binary, embedded)
+    test_playback_controls(binary)
 
     for cols, rows in [(91, 45), (92, 44), (0, 0)]:
         with Session([binary], cols=cols, rows=rows) as s:
@@ -595,6 +673,7 @@ def tests(binary, *, full, strict):
     print("PASS interactive Bash returns after q and keyboard Ctrl-C with original stty")
 
     if full:
+        test_custom_duration(binary)
         with Session([binary, "--measure"]) as s:
             raw, err, elapsed = s.end(0, timeout=34)
             assert_scope(raw)

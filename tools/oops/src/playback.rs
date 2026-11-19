@@ -1,20 +1,100 @@
+use std::fmt;
 use std::io::{self, Write};
+use std::str::FromStr;
 use std::time::Duration;
 
 pub const FPS: u64 = 24;
-pub const RUN_TIME: Duration = Duration::from_secs(30);
-pub const TICKS: u64 = RUN_TIME.as_secs() * FPS;
-
 const NS_PER_SEC: u64 = 1_000_000_000;
 pub const BACKPRESSURE_POLL: Duration = Duration::from_millis(4);
 
-pub fn tick(elapsed: Duration) -> Option<u64> {
-    (elapsed < RUN_TIME).then(|| (elapsed.as_nanos() as u64) * FPS / NS_PER_SEC)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CycleDuration(u8);
+
+impl CycleDuration {
+    pub const fn seconds(self) -> u8 {
+        self.0
+    }
 }
 
-pub fn start_of_tick(tick: u64) -> Duration {
-    debug_assert!(tick <= TICKS);
-    Duration::from_nanos((tick * NS_PER_SEC).div_ceil(FPS))
+impl Default for CycleDuration {
+    fn default() -> Self {
+        Self(30)
+    }
+}
+
+impl FromStr for CycleDuration {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value
+            .parse::<u8>()
+            .ok()
+            .filter(|seconds| (12..=60).contains(seconds))
+            .map(Self)
+            .ok_or("expected whole seconds from 12 to 60")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Direction {
+    #[default]
+    Reverse,
+    Forward,
+}
+
+impl FromStr for Direction {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "reverse" => Ok(Self::Reverse),
+            "forward" => Ok(Self::Forward),
+            _ => Err("expected reverse or forward"),
+        }
+    }
+}
+
+impl fmt::Display for Direction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Reverse => "reverse",
+            Self::Forward => "forward",
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Cycle {
+    pub duration: CycleDuration,
+    pub direction: Direction,
+}
+
+impl Cycle {
+    pub fn length(self) -> Duration {
+        Duration::from_secs(u64::from(self.duration.seconds()))
+    }
+
+    pub fn ticks(self) -> u64 {
+        self.length().as_secs() * FPS
+    }
+
+    pub fn tick(self, elapsed: Duration) -> Option<u64> {
+        (elapsed < self.length()).then(|| elapsed.as_nanos() as u64 * FPS / NS_PER_SEC)
+    }
+
+    pub fn start_of_tick(self, tick: u64) -> Duration {
+        debug_assert!(tick <= self.ticks());
+        Duration::from_nanos((tick * NS_PER_SEC).div_ceil(FPS))
+    }
+
+    #[cfg(any(test, not(goodhand_embedded_playback)))]
+    pub fn yaw(self, tick: u64) -> f64 {
+        let degrees = match self.direction {
+            Direction::Reverse => -360.0,
+            Direction::Forward => 360.0,
+        };
+        degrees * tick as f64 / self.ticks() as f64
+    }
 }
 
 /// Only one packet is ever in flight. Check both cancellation and wall-clock
@@ -80,18 +160,43 @@ mod tests {
     use std::collections::VecDeque;
 
     #[test]
-    fn exact_epoch_boundaries_through_all_720_ticks() {
-        assert_eq!(TICKS, 720);
-        assert_eq!(start_of_tick(TICKS), RUN_TIME);
-        for t in 0..TICKS {
-            assert_eq!(tick(start_of_tick(t)), Some(t));
-            assert_eq!(
-                tick(start_of_tick(t + 1) - Duration::from_nanos(1)),
-                Some(t)
-            );
+    fn exact_epoch_boundaries_for_each_supported_duration() {
+        for seconds in 12..=60 {
+            let cycle = Cycle {
+                duration: CycleDuration(seconds),
+                ..Cycle::default()
+            };
+            assert_eq!(cycle.ticks(), u64::from(seconds) * 24);
+            assert_eq!(cycle.start_of_tick(cycle.ticks()), cycle.length());
+            for tick in 0..cycle.ticks() {
+                assert_eq!(cycle.tick(cycle.start_of_tick(tick)), Some(tick));
+                assert_eq!(
+                    cycle.tick(cycle.start_of_tick(tick + 1) - Duration::from_nanos(1)),
+                    Some(tick)
+                );
+            }
+            assert_eq!(cycle.tick(cycle.length()), None);
+            assert_eq!(cycle.tick(Duration::MAX), None);
         }
-        assert_eq!(tick(RUN_TIME), None);
-        assert_eq!(tick(RUN_TIME + Duration::from_secs(1)), None);
+    }
+
+    #[test]
+    fn procedural_yaw_preserves_default_and_reverses_about_opening_pose() {
+        let reverse = Cycle::default();
+        let forward = Cycle {
+            direction: Direction::Forward,
+            ..reverse
+        };
+        assert_eq!(reverse.ticks(), 720);
+        for tick in 0..reverse.ticks() {
+            assert_eq!(
+                reverse.yaw(tick).to_bits(),
+                (-360.0 * tick as f64 / 720.0).to_bits()
+            );
+            assert_eq!(forward.yaw(tick), -reverse.yaw(tick));
+        }
+        assert_eq!(forward.yaw(0), 0.0);
+        assert!(forward.yaw(719) < 360.0);
     }
 
     #[derive(Default)]

@@ -1,9 +1,8 @@
 //! Terminal projection and encoding, independent of which scene supplies the dots.
 #[cfg(goodhand_embedded_playback)]
-use crate::archived_scene::{Archive, View};
-#[cfg(not(goodhand_embedded_playback))]
-use crate::playback::TICKS;
-use crate::settings::{CellAspect, MAX_ASPECT, MIN_ASPECT, Settings, Zoom};
+use crate::archived_scene::Archive;
+use crate::projection::Projection;
+use crate::settings::{CellAspect, MAX_ASPECT, MIN_ASPECT, Settings};
 #[cfg(not(goodhand_embedded_playback))]
 use goodhand::ArmSampler;
 #[cfg(goodhand_embedded_playback)]
@@ -73,7 +72,7 @@ pub struct Layout {
     pub rows: u16,
     pub aspect: f64,
     pub pitch: PitchSource,
-    pub zoom: Zoom,
+    pub settings: Settings,
     display: Display,
     left: u16,
     top: u16,
@@ -110,21 +109,22 @@ impl Layout {
             rows: picture_rows,
             aspect,
             pitch,
-            zoom: settings.zoom,
+            settings,
             display,
             left: 1 + (cols - 1 - picture_cols) / 2,
             top: 2 + (rows - 3 - picture_rows) / 2,
         }
     }
 
-    #[cfg(any(test, not(goodhand_embedded_playback)))]
-    fn step(self) -> (f64, f64) {
-        // Start from a uniform physical fit, then apply one scale to both axes.
-        // The integer cell window is independent of zoom and still bounds work.
-        let dy = (FRAME_SIZE.1 / f64::from(self.rows))
-            .max(FRAME_SIZE.0 / (self.aspect * f64::from(self.cols)))
-            / self.zoom.factor();
-        (dy * self.aspect, dy)
+    fn projection(self) -> io::Result<Projection> {
+        Projection::new(
+            usize::from(self.cols),
+            usize::from(self.rows),
+            FRAME_SIZE,
+            self.aspect,
+            self.settings.zoom.factor(),
+            self.settings.offset,
+        )
     }
 }
 
@@ -155,37 +155,27 @@ impl Painter {
         layout: Layout,
         packet: &mut Vec<u8>,
     ) -> io::Result<Duration> {
-        let len = usize::from(layout.cols) * usize::from(layout.rows);
-        self.new.resize(len, None);
         let trace_start = Instant::now();
+        let projection = layout.projection()?;
+        self.new.resize(projection.cols * projection.rows, None);
+        let settings = layout.settings;
         #[cfg(goodhand_embedded_playback)]
-        self.archive.project(
-            tick,
-            View {
-                cols: usize::from(layout.cols),
-                rows: usize::from(layout.rows),
-                aspect: layout.aspect,
-                zoom: layout.zoom.factor(),
-            },
-            &mut self.new,
-        )?;
+        self.archive
+            .project(settings.cycle, tick, projection, &mut self.new)?;
         #[cfg(not(goodhand_embedded_playback))]
         {
-            let angle = -360.0 * tick as f64 / TICKS as f64;
-            let sampler = ArmSampler::new(angle).map_err(io::Error::other)?;
-            let (dx, dy) = layout.step();
-            let center_x = (f64::from(layout.cols) - 1.0) / 2.0;
-            let center_y = (f64::from(layout.rows) - 1.0) / 2.0;
-            for (row, pixels) in self
-                .new
-                .chunks_exact_mut(usize::from(layout.cols))
-                .enumerate()
-            {
-                let y = (center_y - row as f64) * dy;
+            let sampler = ArmSampler::new(settings.cycle.yaw(tick)).map_err(io::Error::other)?;
+            for (row, pixels) in self.new.chunks_exact_mut(projection.cols).enumerate() {
+                let y = -projection.y(row);
                 for (col, pixel) in pixels.iter_mut().enumerate() {
-                    let x = (col as f64 - center_x) * dx;
-                    *pixel = sampler.sample(x, y);
+                    *pixel = sampler.sample(projection.x(col), y);
                 }
+            }
+        }
+        // Adjust art gray only, never the presence of a dot or the UI colors.
+        if settings.brightness != crate::settings::Brightness::default() {
+            for level in self.new.iter_mut().flatten() {
+                *level = settings.brightness.apply(*level);
             }
         }
         let trace_time = trace_start.elapsed();
@@ -242,8 +232,12 @@ impl Painter {
 
         cup(packet, layout.top + layout.rows, layout.left);
         gray(packet, 135);
-        write!(packet, "30 seconds / q or Ctrl-C / tick {tick:03}")
-            .expect("Vec writes cannot fail");
+        write!(
+            packet,
+            "{} seconds / q or Ctrl-C / tick {tick:03}",
+            settings.cycle.duration.seconds()
+        )
+        .expect("Vec writes cannot fail");
         cup(packet, layout.display.size.rows, 1);
         Ok(trace_time)
     }
@@ -297,7 +291,7 @@ mod tests {
         );
         assert_eq!(measured.pitch, PitchSource::Measured);
         assert!((measured.aspect - 7.0 / 15.0).abs() < 1e-12);
-        let (dx, dy) = measured.step();
+        let (dx, dy) = measured.projection().unwrap().step();
         assert!((dx / dy - measured.aspect).abs() < 1e-12);
         assert_eq!(
             Layout::fit(
@@ -335,20 +329,30 @@ mod tests {
                 assert!(center_slack(fit.top - 2, (rows - 1 - fit.rows) - fit.top) <= 1);
                 assert!(fit.cols <= MAX_COLS && fit.rows <= MAX_ROWS);
                 assert_eq!(fit.pitch, PitchSource::Configured);
-                let (fit_x, fit_y) = fit.step();
+                let (fit_x, fit_y) = fit.projection().unwrap().step();
                 assert!(fit_x * f64::from(fit.cols) >= FRAME_SIZE.0 - 1e-12);
                 assert!(fit_y * f64::from(fit.rows) >= FRAME_SIZE.1 - 1e-12);
                 for zoom in ["50", "99", "100", "101", "200"] {
-                    let zoom: Zoom = zoom.parse().unwrap();
+                    let zoom: crate::settings::Zoom = zoom.parse().unwrap();
                     let layout = Layout::fit(
                         display,
                         Settings {
                             zoom,
                             cell_aspect: CellAspect::Fixed(aspect),
+                            ..Settings::default()
                         },
                     );
-                    assert_eq!(layout, Layout { zoom, ..fit });
-                    let (dx, dy) = layout.step();
+                    assert_eq!(
+                        layout,
+                        Layout {
+                            settings: Settings {
+                                zoom,
+                                ..fit.settings
+                            },
+                            ..fit
+                        }
+                    );
+                    let (dx, dy) = layout.projection().unwrap().step();
                     assert!((dx / dy - aspect).abs() < 1e-12);
                     assert!((dx * zoom.factor() - fit_x).abs() < 1e-12);
                     assert!((dy * zoom.factor() - fit_y).abs() < 1e-12);
@@ -375,6 +379,7 @@ mod tests {
         let settings = Settings {
             zoom: "125".parse().unwrap(),
             cell_aspect: CellAspect::Fixed(0.5),
+            ..Settings::default()
         };
         let mut painter = Painter::new().unwrap();
         let mut packet = Vec::new();
