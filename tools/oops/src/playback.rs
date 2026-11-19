@@ -113,7 +113,7 @@ impl fmt::Display for Repeat {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Phase {
     pub turn: u64,
     pub tick: u64,

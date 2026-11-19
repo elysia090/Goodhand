@@ -3,6 +3,8 @@ mod archive_profile;
 #[cfg(any(test, goodhand_embedded_playback))]
 mod archived_scene;
 mod arm_scene;
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+mod cursor_report;
 mod measurement;
 mod playback;
 mod projection;
@@ -26,7 +28,7 @@ const HELP: &str = "oops 0.0.1\n\
 Loop an arm rotation on a 24 Hz timeline (30 seconds per turn by default).\n\
 Pilot target: a foreground Xfce/VTE-compatible Linux terminal,\n\
 with UTF-8, true color, and at least 92 columns by 45 rows.\n\
-Run from the normal shell screen. Press q or Ctrl-C to exit.\n\
+Draw inline below the shell command by default. Press q or Ctrl-C to exit.\n\
 \n\
 Usage: oops [--check | --measure] [--config PATH] [OPTIONS]\n\
        oops --help | --version\n\
@@ -34,6 +36,7 @@ Usage: oops [--check | --measure] [--config PATH] [OPTIONS]\n\
   --check               Check terminal preconditions and display geometry.\n\
   --measure             Play and print process timing after restoring the shell.\n\
   --once                Stop after one turn instead of looping.\n\
+  --island          Use Island mode in the same terminal window.\n\
   --config PATH         Read optional display settings from this file only.\n\
   --zoom PERCENT        50–200; 100 fits the model frame, above 100 may crop.\n\
   --cell-aspect ASPECT  auto (default) or cell width/height from 0.30 to 0.85.\n\
@@ -61,6 +64,7 @@ enum Mode {
 struct Options {
     mode: Mode,
     repeat: Repeat,
+    island: bool,
     config: Option<PathBuf>,
     overrides: Overrides,
 }
@@ -84,6 +88,12 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Options, Strin
                     return Err("--once: specified more than once".into());
                 }
                 options.repeat = Repeat::Once;
+                continue;
+            }
+            Some("--island") => {
+                if std::mem::replace(&mut options.island, true) {
+                    return Err("--island: specified more than once".into());
+                }
                 continue;
             }
             Some("--config") => {
@@ -116,7 +126,8 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Options, Strin
         options.mode = mode;
     }
     if matches!(options.mode, Mode::Help | Mode::Version)
-        && (options.repeat == Repeat::Once
+        && (options.island
+            || options.repeat == Repeat::Once
             || options.config.is_some()
             || options.overrides != Overrides::default())
     {
@@ -160,11 +171,21 @@ fn error_exit(reason: &str) -> ExitCode {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
 fn run(options: Options) -> ExitCode {
-    let Options { mode, repeat, .. } = options;
+    let Options {
+        mode,
+        repeat,
+        island,
+        ..
+    } = options;
     match options.settings() {
-        Ok(settings) => {
-            terminal::run(mode == Mode::Check, mode == Mode::Measure, settings, repeat).into()
-        }
+        Ok(settings) => terminal::run(
+            mode == Mode::Check,
+            mode == Mode::Measure,
+            settings,
+            repeat,
+            island,
+        )
+        .into(),
         Err(reason) => error_exit(&reason),
     }
 }
@@ -202,6 +223,7 @@ mod tests {
             &["--help", "--check"][..],
             &["--help", "--once"],
             &["--once", "--once"],
+            &["--island", "--island"],
             &["--duration=10"],
             &["--duration", "11"],
             &["--duration", "61"],

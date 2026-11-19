@@ -1,5 +1,5 @@
 use crate::arm_scene::Layout;
-use crate::playback::Repeat;
+use crate::playback::{Phase, Repeat};
 use crate::settings::Settings;
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -24,6 +24,11 @@ pub struct Measurement {
     written: u64,
     layout: Option<Layout>,
     timings: VecDeque<Timings>,
+    first: Option<Phase>,
+    last: Option<Phase>,
+    first_join: Option<(Phase, Phase)>,
+    max_gap: u64,
+    order_errors: u64,
 }
 
 impl Measurement {
@@ -40,6 +45,11 @@ impl Measurement {
             bytes: 0,
             written: 0,
             layout: None,
+            first: None,
+            last: None,
+            first_join: None,
+            max_gap: 0,
+            order_errors: 0,
             timings: VecDeque::with_capacity(if enabled {
                 settings.cycle.ticks() as usize
             } else {
@@ -61,9 +71,31 @@ impl Measurement {
         self.partial_write = self.partial_write.saturating_add(u64::from(partial));
     }
 
-    pub fn record_frame(&mut self, layout: Layout, bytes: usize, late: bool, timing: Timings) {
+    pub fn record_frame(
+        &mut self,
+        phase: Phase,
+        layout: Layout,
+        bytes: usize,
+        late: bool,
+        timing: Timings,
+    ) {
         if !self.enabled {
             return;
+        }
+        self.first.get_or_insert(phase);
+        if let Some(previous) = self.last.replace(phase) {
+            if previous >= phase {
+                self.order_errors = self.order_errors.saturating_add(1);
+            } else {
+                if previous.turn != phase.turn && self.first_join.is_none() {
+                    self.first_join = Some((previous, phase));
+                }
+                let gap = u128::from(phase.turn - previous.turn)
+                    * u128::from(self.settings.cycle.ticks())
+                    + u128::from(phase.tick)
+                    - u128::from(previous.tick);
+                self.max_gap = self.max_gap.max(u64::try_from(gap).unwrap_or(u64::MAX));
+            }
         }
         self.written = self.written.saturating_add(1);
         self.bytes = self.bytes.saturating_add(bytes as u64);
@@ -107,8 +139,17 @@ impl Measurement {
             Repeat::Once => format!("{}/{}", self.written, self.settings.cycle.ticks()),
             Repeat::Loop => self.written.to_string(),
         };
+        let phase_label = |phase: Option<Phase>| {
+            phase.map_or_else(|| "none".into(), |p| format!("{}:{}", p.turn, p.tick))
+        };
+        let first = phase_label(self.first);
+        let last = phase_label(self.last);
+        let join = self.first_join.map_or_else(
+            || "none".into(),
+            |(before, after)| format!("{}-{}", phase_label(Some(before)), phase_label(Some(after))),
+        );
         Some(format!(
-            "oops: grid={layout} written={written} rendered={} stale={} late_write={} dropped_write={} partial_write={} bytes={} trace_p95/max_us={} encode_p95/max_us={} write_p95/max_us={} timing_samples={} {} playback={}\n",
+            "oops: grid={layout} written={written} rendered={} stale={} late_write={} dropped_write={} partial_write={} bytes={} trace_p95/max_us={} encode_p95/max_us={} write_p95/max_us={} timing_samples={} {} playback={} first={first} last={last} join={join} max_gap={} order_errors={}\n",
             self.traces,
             self.stale,
             self.late_write,
@@ -121,6 +162,8 @@ impl Measurement {
             self.timings.len(),
             self.settings.playback_status(),
             self.repeat,
+            self.max_gap,
+            self.order_errors,
         ))
     }
 }
@@ -143,6 +186,10 @@ mod tests {
         );
         for i in 0..2 * settings.cycle.ticks() {
             stats.record_frame(
+                Phase {
+                    turn: i / settings.cycle.ticks(),
+                    tick: i % settings.cycle.ticks(),
+                },
                 layout,
                 100,
                 false,

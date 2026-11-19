@@ -1,8 +1,9 @@
-//! Linux x86-64 terminal boundary. Fullscreen ownership is an explicit pilot
-//! precondition: launch in the main screen of a normal foreground VTE shell.
+//! Linux x86-64 terminal boundary for inline and Island playback in a normal foreground VTE shell.
 use crate::arm_scene::{
-    CONTENT_LABEL, Display, Layout, MIN_HEIGHT, MIN_WIDTH, Painter, PitchSource, Size,
+    CONTENT_LABEL, Display, InlineRows, Layout, MIN_HEIGHT, MIN_WIDTH, Painter, PitchSource, Size,
+    clear_rows, cup, reservation,
 };
+use crate::cursor_report::{Cursor, Decoder};
 use crate::measurement::{Measurement, Timings};
 use crate::playback::{self, Repeat, Timeline};
 use crate::settings::Settings;
@@ -29,6 +30,10 @@ const SIGQUIT: c_int = 3;
 const SIGTERM: c_int = 15;
 const SIGTSTP: c_int = 20;
 
+const QUERY_CURSOR: &[u8] = b"\x1b[6n";
+const SAVE_CURSOR: &[u8] = b"\x1b7";
+const RESTORE_CURSOR: &[u8] = b"\x1b8";
+const RESET: &[u8] = b"\x18\x1b[0m";
 const ENTER: &[u8] = b"\x1b[?1049h\x1b[0m\x1b[48;2;0;0;0m\x1b[2J";
 const LEAVE: &[u8] = b"\x18\x1b[0m\x1b[?1049l";
 const TICK_POLL: Duration = Duration::from_millis(8);
@@ -264,7 +269,17 @@ struct Screen {
     terminal: Terminal,
     entered: bool,
     original_keys: Option<Termios>,
+    inline: Cell<Option<InlineState>>,
     quit_pressed: Cell<bool>,
+}
+
+#[derive(Clone, Copy)]
+struct InlineState {
+    display: Display,
+    rows: InlineRows,
+    /// False when only part of a frame has been written, or while probing
+    /// reflow. The cursor may not be on the reserved line below the art.
+    anchored: bool,
 }
 
 enum FrameStop {
@@ -300,7 +315,7 @@ impl Write for TrackEntry<'_> {
 }
 
 impl Screen {
-    fn enter(&mut self) -> io::Result<()> {
+    fn enter_island(&mut self) -> io::Result<()> {
         let deadline = Instant::now() + CONTROL_BUDGET;
         let writer = TrackEntry {
             output: &self.terminal.0,
@@ -315,6 +330,189 @@ impl Screen {
                 Err(io::Error::other(size_error(size)))
             }
         })
+    }
+
+    fn control(&self, bytes: &[u8], deadline: Instant) -> io::Result<()> {
+        playback::write_bounded(&self.terminal.0, bytes, || {
+            check_live(&self.terminal, deadline)
+        })
+    }
+
+    fn cursor_reports<const N: usize>(&self, request: &[u8]) -> io::Result<[Cursor; N]> {
+        let deadline = Instant::now() + CONTROL_BUDGET;
+        self.control(request, deadline)?;
+        let mut decoder = Decoder::default();
+        let mut bytes = [0u8; 64];
+        let mut cursors = [Cursor { row: 0, col: 0 }; N];
+        let mut received = 0;
+        loop {
+            if Instant::now() >= deadline {
+                return Err(io::Error::other(
+                    "terminal did not report its cursor position",
+                ));
+            }
+            check_live(&self.terminal, deadline)?;
+            match (&self.terminal.0).read(&mut bytes) {
+                Ok(count) if bytes[..count].contains(&b'q') => {
+                    self.quit_pressed.set(true);
+                    return Err(io::Error::other("playback stopped"));
+                }
+                Ok(count) => {
+                    for cursor in bytes[..count].iter().filter_map(|&byte| decoder.feed(byte)) {
+                        cursors[received] = cursor;
+                        received += 1;
+                        if received == N {
+                            return Ok(cursors);
+                        }
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => return Err(error),
+            }
+            std::thread::sleep(playback::BACKPRESSURE_POLL);
+        }
+    }
+
+    fn cursor(&self) -> io::Result<Cursor> {
+        let [cursor] = self.cursor_reports(QUERY_CURSOR)?;
+        Ok(cursor)
+    }
+
+    fn settle(&self, mut display: Display) -> io::Result<Display> {
+        // Dragging an edge can deliver a series of ioctl sizes. Do not move
+        // the live lower marker while the emulator is still reflowing it.
+        const SETTLE: Duration = Duration::from_millis(120);
+        let mut unchanged_since = Instant::now();
+        let deadline = unchanged_since + CONTROL_BUDGET;
+        loop {
+            if self.stopping()? {
+                return Err(io::Error::other("playback stopped"));
+            }
+            let actual = self.terminal.display()?;
+            if actual != display {
+                display = actual;
+                unchanged_since = Instant::now();
+            }
+            if unchanged_since.elapsed() >= SETTLE {
+                return Ok(display);
+            }
+            if Instant::now() >= deadline {
+                // Return to the clock and key checks while the drag continues.
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            std::thread::sleep(TICK_POLL);
+        }
+    }
+
+    fn enter_inline(&self, display: Display) -> io::Result<()> {
+        let before = self.cursor()?;
+        if before.col != 1 || !(2..=display.size.rows).contains(&before.row) {
+            return Err(io::Error::other(
+                "run oops on a fresh line in a normal shell",
+            ));
+        }
+        let reserved = reservation(display.size);
+        self.control(
+            &b"\r\n".repeat(usize::from(reserved)),
+            Instant::now() + CONTROL_BUDGET,
+        )?;
+        let below = self.cursor()?;
+        let expected =
+            (u32::from(before.row) + u32::from(reserved)).min(u32::from(display.size.rows));
+        if below.col != 1
+            || u32::from(below.row) != expected
+            || display != self.terminal.display()?
+        {
+            return Err(io::Error::other(
+                "terminal geometry changed while reserving inline rows",
+            ));
+        }
+        let rows = InlineRows {
+            top: below.row - reserved,
+            below: below.row,
+        };
+        self.inline.set(Some(InlineState {
+            display,
+            rows,
+            anchored: true,
+        }));
+        // DEC save/restore has one slot in VTE. We borrow it only in a
+        // foreground shell, after the allocation's scrolling has finished.
+        let mut packet = Vec::new();
+        cup(&mut packet, rows.top, 1);
+        packet.extend_from_slice(SAVE_CURSOR);
+        cup(&mut packet, rows.below, 1);
+        self.control(&packet, Instant::now() + CONTROL_BUDGET)
+    }
+
+    fn drawing_surface(&self, display: Display) -> io::Result<(Display, Option<InlineRows>)> {
+        let Some(state) = self.inline.get() else {
+            return Ok((display, None));
+        };
+        if state.display.size == display.size {
+            // Pixel pitch can change without relocating either row.
+            self.inline.set(Some(InlineState { display, ..state }));
+            return Ok((display, Some(state.rows)));
+        }
+        if !state.anchored {
+            return Err(io::Error::other(
+                "resized during a partial inline draw; stopped to preserve shell output",
+            ));
+        }
+        let display = self.settle(display)?;
+        if !display.size.fits() {
+            return Err(io::Error::other(size_error(display.size)));
+        }
+        if state.display == display {
+            return Ok((display, Some(state.rows)));
+        }
+        // Both cursor reports are requested in one packet, so normally
+        // they describe the same reflow snapshot. Do not erase if a new
+        // geometry nevertheless invalidates either marker.
+        self.mark_anchor(false);
+        let request = [
+            b"\r".as_slice(),
+            QUERY_CURSOR,
+            RESTORE_CURSOR,
+            b"\r",
+            QUERY_CURSOR,
+        ]
+        .concat();
+        let [below, top] = self.cursor_reports(&request)?;
+        let actual = self.terminal.display()?;
+        if top.col != 1
+            || below.col != 1
+            || top.row >= below.row
+            || below.row > display.size.rows
+            || display.size != actual.size
+        {
+            return Err(io::Error::other(format!(
+                "cannot locate reserved inline rows after resize (top {top:?}, below {below:?}, expected {display:?}, read {actual:?})"
+            )));
+        }
+        let rows = InlineRows {
+            top: top.row,
+            below: below.row,
+        };
+        let mut packet = Vec::new();
+        cup(&mut packet, rows.below, 1);
+        self.control(&packet, Instant::now() + CONTROL_BUDGET)?;
+        self.inline.set(Some(InlineState {
+            display: actual,
+            rows,
+            anchored: true,
+        }));
+        Ok((actual, Some(rows)))
+    }
+
+    fn mark_anchor(&self, anchored: bool) {
+        if let Some(state) = self.inline.get() {
+            self.inline.set(Some(InlineState { anchored, ..state }));
+        }
     }
 
     fn enable_keys(&mut self) -> io::Result<()> {
@@ -370,16 +568,29 @@ impl Screen {
             || self.terminal.wait_writable().map(|_| ()),
         );
         match result {
-            Ok(()) => Ok(FrameResult::Submitted),
-            Err(PacketError::Stopped { cause, written }) => match cause {
-                FrameStop::Backpressure | FrameStop::ViewportChanged => Ok(FrameResult::Dropped {
-                    wait_for_output: matches!(cause, FrameStop::Backpressure),
-                    partial: written != 0,
-                }),
-                FrameStop::Error(error) => Err(error),
-                FrameStop::EndOfRun => Ok(FrameResult::EndOfRun),
-            },
-            Err(PacketError::Io(error)) => Err(error),
+            Ok(()) => {
+                self.mark_anchor(true);
+                Ok(FrameResult::Submitted)
+            }
+            Err(PacketError::Stopped { cause, written }) => {
+                if written != 0 {
+                    self.mark_anchor(false);
+                }
+                match cause {
+                    FrameStop::Backpressure | FrameStop::ViewportChanged => {
+                        Ok(FrameResult::Dropped {
+                            wait_for_output: matches!(cause, FrameStop::Backpressure),
+                            partial: written != 0,
+                        })
+                    }
+                    FrameStop::Error(error) => Err(error),
+                    FrameStop::EndOfRun => Ok(FrameResult::EndOfRun),
+                }
+            }
+            Err(PacketError::Io(error)) => {
+                self.mark_anchor(false);
+                Err(error)
+            }
         }
     }
 
@@ -390,11 +601,37 @@ impl Screen {
             self.terminal.foreground()?;
             original.apply(self.terminal.fd())
         });
-        let screen = self.leave_screen();
+        let screen = self.leave_inline().and_then(|()| self.leave_island());
         keys.and(screen)
     }
 
-    fn leave_screen(&mut self) -> io::Result<()> {
+    fn leave_inline(&self) -> io::Result<()> {
+        let Some(state) = self.inline.take() else {
+            return Ok(());
+        };
+        let display = self.terminal.display()?;
+        let mut packet = Vec::from(RESET);
+        if display == state.display {
+            clear_rows(&mut packet, state.rows);
+            cup(&mut packet, state.rows.top, 1);
+        } else if state.anchored {
+            packet.push(b'\r');
+        } else {
+            // A resize interrupted a packet/probe. Do not erase uncertain
+            // rows; append a fresh prompt line below the visible content.
+            cup(&mut packet, display.size.rows.max(1), 1);
+            packet.extend_from_slice(b"\r\n");
+        }
+        let deadline = Instant::now() + CONTROL_BUDGET;
+        playback::write_bounded(&self.terminal.0, &packet, || {
+            if Instant::now() >= deadline {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            self.terminal.foreground()
+        })
+    }
+
+    fn leave_island(&mut self) -> io::Result<()> {
         if !std::mem::take(&mut self.entered) {
             return Ok(());
         }
@@ -468,7 +705,12 @@ fn play(
         if attempted != Some(slot.phase) {
             attempted = Some(slot.phase);
             let begin_paint = Instant::now();
-            let layout = Layout::fit(observed, settings);
+            let (observed, inline) = match screen.drawing_surface(observed) {
+                Ok(surface) => surface,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+                Err(error) => return Err(error),
+            };
+            let layout = Layout::for_surface(observed, settings, inline);
             let trace = painter.paint(slot.phase.tick, layout, &mut packet)?;
             let encode = begin_paint.elapsed().saturating_sub(trace);
             stats.record_trace();
@@ -490,6 +732,7 @@ fn play(
                 FrameResult::Submitted => {
                     let write = begin_write.elapsed();
                     stats.record_frame(
+                        slot.phase,
                         layout,
                         packet.len(),
                         Instant::now() >= next,
@@ -552,7 +795,13 @@ fn report_runtime(message: &str) {
     });
 }
 
-pub fn run(check_only: bool, measure: bool, settings: Settings, repeat: Repeat) -> u8 {
+pub fn run(
+    check_only: bool,
+    measure: bool,
+    settings: Settings,
+    repeat: Repeat,
+    island: bool,
+) -> u8 {
     let (terminal, display) = match preflight() {
         Ok(result) => result,
         Err(reason) => {
@@ -561,9 +810,19 @@ pub fn run(check_only: bool, measure: bool, settings: Settings, repeat: Repeat) 
         }
     };
     if check_only {
-        let layout = Layout::fit(display, settings);
+        let layout = if island {
+            Layout::fit(display, settings)
+        } else {
+            // Preflight remains read-only: this is the planned inline
+            // drawing size, before any terminal reflow or allocation.
+            let rows = InlineRows {
+                top: 1,
+                below: 1 + reservation(display.size),
+            };
+            Layout::for_surface(display, settings, Some(rows))
+        };
         println!(
-            "oops: {} columns by {} rows; model grid {} by {}, cell aspect {:.4} ({}), zoom {}%; content: {CONTENT_LABEL}; {} playback={repeat}",
+            "oops: {} columns by {} rows; model grid {} by {}, cell aspect {:.4} ({}), zoom {}%; content: {CONTENT_LABEL}; {} playback={repeat} surface={}",
             display.size.cols,
             display.size.rows,
             layout.cols,
@@ -575,6 +834,7 @@ pub fn run(check_only: bool, measure: bool, settings: Settings, repeat: Repeat) 
             },
             settings.zoom.percent(),
             settings.playback_status(),
+            if island { "island" } else { "inline" },
         );
         return 0;
     }
@@ -593,12 +853,19 @@ pub fn run(check_only: bool, measure: bool, settings: Settings, repeat: Repeat) 
         terminal,
         entered: false,
         original_keys: None,
+        inline: Cell::new(None),
         quit_pressed: Cell::new(false),
     };
     let mut stats = Measurement::new(measure, settings, repeat);
     let playback = screen
-        .enter()
-        .and_then(|()| screen.enable_keys())
+        .enable_keys()
+        .and_then(|()| {
+            if island {
+                screen.enter_island()
+            } else {
+                screen.enter_inline(display)
+            }
+        })
         .and_then(|()| play(&screen, settings, repeat, &mut stats, &mut painter));
     let cleanup = screen.restore();
     if let Some(report) = stats.report() {

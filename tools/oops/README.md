@@ -5,9 +5,16 @@ Xfce Terminal shell on GNU/Linux x86-64, run:
 
     ./oops --check
     ./oops
+    ./oops --island
 
-The minimum terminal is 92 columns × 45 rows with UTF-8, a single-cell
-bullet and true color. Playback loops by default, taking 30 seconds per
+By default, oops draws only the artwork in the current shell, immediately
+below the command. It leaves prior shell output in the normal screen and
+scrollback, reserving at most three quarters of the visible rows (and no
+more than 80 rows). Use a dark terminal background to see the original
+gray levels. `--island` draws only the artwork in a separate terminal
+buffer, using the current window size; it does not maximize the window.
+The minimum is 92 columns × 45 rows with UTF-8, a single-cell bullet, and
+true color. Playback loops by default, taking 30 seconds per
 turn. Press q or Ctrl-C to return to the shell, or run `./oops --once`
 to stop automatically at the end of the first turn. No config, video, guide, external
 artwork, Python, Rust installation or FFmpeg is required at runtime.
@@ -75,10 +82,10 @@ font, frame submission, or screen refresh.
   allowed. The precedence per setting is command line, explicit file,
   built-in default. Unknown or duplicate keys, invalid values (even
   when overridden), and missing or unreadable explicit files stop
-  startup before the app enters its alternate screen.
+  startup before the app draws or reserves rows.
 
 `--check` prints the compiled content, resolved settings, aspect source,
-and drawing grid without entering the alternate screen. `--measure`
+and drawing grid without starting playback. `--measure`
 prints the playback settings and timing after exit, including the grid,
 aspect, and zoom of the last fully submitted frame. Use `--once` with
 `--measure` to automatically report after a single turn. Loop counters
@@ -88,12 +95,19 @@ turn's worth of the most recent successfully submitted frames.
 ### Playback and recovery
 
 Only changed cell runs are written. The app temporarily turns off canonical
-input and echo without changing terminal signals. Normal completion, q,
-handled signals and controlled errors restore the original attributes and
-leave the owned alternate screen. Forced kill, disconnection, and a wedged
-terminal do not guarantee visual cleanup. A resize below the minimum exits
-without forcing a corrupt draw. --measure reports timings after terminal
-restoration. Timing percentiles and maxima describe frames submitted
+input and echo without changing terminal signals. Normal completion, q, and
+handled signals restore the original keyboard attributes. Inline returns
+the prompt below the command and erases only its reserved rows. Island
+leaves the separate buffer so the original shell is shown again. Inline
+asks VTE for its two cursor positions, not existing screen text. As a
+window or font resize settles, it re-fits the visible reserved area.
+Normal terminal scrolling can move older commands or previously drawn
+cells into scrollback; oops does not erase scrollback. If a resize
+interrupts a partial inline write or the anchors cannot be verified,
+playback stops without erasing uncertain rows. A resize below the
+minimum also stops. Forced kill,
+disconnection, and a wedged terminal do not guarantee visual cleanup.
+`--measure` reports timings after terminal restoration. Timing percentiles and maxima describe frames submitted
 completely to the tty. The stale counter counts completed renders discarded
 before submission. The late-write counter counts completed writes that
 crossed their tick boundary. When a nonblocking write would block, the
@@ -105,8 +119,8 @@ or queue of missed poses. A pending write that runs into a join is
 discarded if it has not completed. q, resize checks and handled signals
 still apply; `--once` also imposes a final deadline.
 If any prefix reached the terminal, the next current frame cancels an
-incomplete terminal sequence, clears the owned alternate screen and
-draws the full image rather than continuing the old diff. A usable
+incomplete terminal sequence, clears only the area it owns, and draws the
+full image rather than continuing the old diff. A usable
 resize during submission also drops that frame and redraws at the new size.
 After a reported viewport change, the next successfully submitted frame
 uses a fresh canvas, even if the render grid does not change.

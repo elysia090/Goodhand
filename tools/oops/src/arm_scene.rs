@@ -66,6 +66,26 @@ impl PitchSource {
     }
 }
 
+/// Physical rows bounded by the saved top and the live row below the art.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InlineRows {
+    pub top: u16,
+    pub below: u16,
+}
+
+pub fn reservation(size: Size) -> u16 {
+    // Leave room for the command and neighboring shell output, even
+    // when the command launched at the viewport bottom.
+    ((u32::from(size.rows) * 3 / 4) as u16).min(MAX_ROWS)
+}
+
+pub fn clear_rows(packet: &mut Vec<u8>, rows: InlineRows) {
+    for row in rows.top..rows.below {
+        cup(packet, row, 1);
+        packet.extend_from_slice(b"\x1b[2K");
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {
     pub cols: u16,
@@ -76,10 +96,15 @@ pub struct Layout {
     display: Display,
     left: u16,
     top: u16,
+    inline: Option<InlineRows>,
 }
 
 impl Layout {
     pub fn fit(display: Display, settings: Settings) -> Self {
+        Self::for_surface(display, settings, None)
+    }
+
+    pub fn for_surface(display: Display, settings: Settings, inline: Option<InlineRows>) -> Self {
         debug_assert!(display.size.fits());
         let Size { cols, rows } = display.size;
         let (px, py) = display.pixels;
@@ -100,7 +125,10 @@ impl Layout {
         };
 
         let available_cols = (cols - 1).min(MAX_COLS);
-        let available_rows = (rows - 3).min(MAX_ROWS);
+        let inline_height = reservation(display.size);
+        let available_rows = inline.map_or((rows - 3).min(MAX_ROWS), |area| {
+            (area.below - area.top).min(inline_height)
+        });
         let ratio = FRAME_SIZE.0 / (FRAME_SIZE.1 * aspect);
         let picture_cols = available_cols.min((f64::from(available_rows) * ratio).floor() as u16);
         let picture_rows = available_rows.min((f64::from(available_cols) / ratio).floor() as u16);
@@ -112,7 +140,8 @@ impl Layout {
             settings,
             display,
             left: 1 + (cols - 1 - picture_cols) / 2,
-            top: 2 + (rows - 3 - picture_rows) / 2,
+            top: inline.map_or_else(|| 2 + (rows - 3 - picture_rows) / 2, |area| area.top),
+            inline,
         }
     }
 
@@ -183,14 +212,16 @@ impl Painter {
         packet.clear();
         let same_layout = !self.needs_resync && self.old_layout == Some(layout);
         if !same_layout {
-            if self.needs_resync {
+            if let Some(area) = layout.inline {
+                if self.needs_resync || self.old_layout.is_some() {
+                    packet.extend_from_slice(b"\x18\x1b[0m");
+                    clear_rows(packet, area);
+                }
+            } else if self.needs_resync {
                 packet.extend_from_slice(RESYNC);
             } else if self.old_layout.is_some() {
                 packet.extend_from_slice(b"\x1b[2J");
             }
-            cup(packet, layout.top - 1, layout.left);
-            gray(packet, 160);
-            write!(packet, "oops / {CONTENT_LABEL}").expect("Vec writes cannot fail");
         }
 
         let mut active = None;
@@ -230,15 +261,16 @@ impl Painter {
             }
         }
 
-        cup(packet, layout.top + layout.rows, layout.left);
-        gray(packet, 135);
-        write!(
+        if layout.inline.is_some() {
+            packet.extend_from_slice(b"\x1b[0m");
+        }
+        cup(
             packet,
-            "{} seconds / q or Ctrl-C / tick {tick:03}",
-            settings.cycle.duration.seconds()
-        )
-        .expect("Vec writes cannot fail");
-        cup(packet, layout.display.size.rows, 1);
+            layout
+                .inline
+                .map_or(layout.display.size.rows, |area| area.below),
+            1,
+        );
         Ok(trace_time)
     }
 
@@ -253,7 +285,7 @@ impl Painter {
     }
 }
 
-fn cup(out: &mut Vec<u8>, row: u16, col: u16) {
+pub fn cup(out: &mut Vec<u8>, row: u16, col: u16) {
     write!(out, "\x1b[{row};{col}H").expect("Vec writes cannot fail");
 }
 

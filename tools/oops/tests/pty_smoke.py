@@ -17,7 +17,7 @@ from pathlib import Path
 ENTER = b"\x1b[?1049h"
 LEAVE = b"\x18\x1b[0m\x1b[?1049l"
 RESYNC = b"\x18\x1b[0m\x1b[48;2;0;0;0m\x1b[2J"
-TICK = re.compile(rb" / tick (\d{3,4})(?=\x1b)")
+CURSOR_QUERY = b"\x1b[6n"
 FOREIGN = (b"\x1b[?25", b"\x1b[?7", b"\x1b]")
 
 ENV = os.environ | {
@@ -55,7 +55,20 @@ class Session:
         fcntl.ioctl(0, termios.TIOCSCTTY, 0)
 
     def geometry(self, cols, rows, pixels=(0, 0)):
+        self.rows = rows
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, *pixels))
+
+    def cursor_reply(self, number, row, col=1):
+        self.until(lambda raw: raw.count(CURSOR_QUERY) >= number)
+        data = f"\x1b[{row};{col}R".encode()
+        # Split the report so assembly across nonblocking reads is exercised.
+        os.write(self.master, data[:3])
+        time.sleep(0.006)
+        os.write(self.master, data[3:])
+
+    @property
+    def bottom(self):
+        return f"\x1b[{self.rows};1H".encode()
 
     def pump(self, timeout=0.025):
         if select.select([self.master], [], [], timeout)[0]:
@@ -134,6 +147,7 @@ def assert_scope(raw):
     assert raw.startswith(ENTER) and raw.endswith(LEAVE), "escaped alternate screen ownership"
     assert not any(token in raw for token in FOREIGN), "unowned mode changes"
     assert raw.count(b"\x1b[?1049l") == 1
+    assert not any(text in raw for text in (b"oops /", b" / tick ", b"q or Ctrl-C"))
     assert b"\n" not in raw and b"\r" not in raw, "might scroll the screen"
 
 
@@ -235,7 +249,7 @@ def test_resize_wire_expectations():
 
 def test_config(binary, embedded):
     def check(args, expected, pixels=(0, 0), env=None):
-        with Session([binary, "--check", *args], cols=165, rows=55,
+        with Session([binary, "--check", "--island", *args], cols=165, rows=55,
                      pixels=pixels, env=env) as s:
             out, err, _ = s.end(0)
             assert not err and expected in out, (out, err)
@@ -327,7 +341,7 @@ def test_config(binary, embedded):
 
 def test_zoom_resize(binary, embedded):
     for zoom in (50, 200):
-        with Session([binary, "--measure", "--zoom", str(zoom)], cols=165, rows=55,
+        with Session([binary, "--island", "--measure", "--zoom", str(zoom)], cols=165, rows=55,
                      pixels=(1155, 825)) as s:
             bottom = b"\x1b[55;1H"
             clear = b"\x1b[2J"
@@ -363,14 +377,14 @@ def test_zoom_resize(binary, embedded):
 def opening_cells(binary, options):
     """Decode occupied cells in one complete wire frame, not its appearance."""
     marker = b"\x1b[65;1H"
-    with Session([binary, "--zoom", "50", "--cell-aspect", "0.60", *options],
+    with Session([binary, "--island", "--zoom", "50", "--cell-aspect", "0.60", *options],
                  cols=121, rows=65) as s:
         s.until(marker)
         os.write(s.master, b"q")
         raw, err, _ = s.end(0)
         assert_scope(raw)
         frame = raw[:raw.index(marker) + len(marker)]
-        assert TICK.findall(frame) == [b"000"] and not err, (frame[-80:], err)
+        assert not err, (frame[-80:], err)
     occupied = {}
     row = col = gray = None
     for token in re.split(rb"(\x1b\[[0-9;?]*[A-Za-z])", frame):
@@ -406,57 +420,137 @@ def test_playback_controls(binary):
     print("PASS playback direction/duration opening parity, gray gain, and artwork-only offset")
 
 
+def timing_output(err):
+    def field(name):
+        return re.search(rb"\b" + name + rb"=([^ \n]+)", err)[1]
+    first, last = (tuple(map(int, field(name).split(b":"))) for name in (b"first", b"last"))
+    count = int(field(b"written").split(b"/")[0])
+    assert field(b"order_errors") == b"0", err
+    return first, last, count, field
+
+
 def test_default_loop(binary, *, stall=False):
     command = [binary, "--measure", "--duration", "12"]
-    complete_tick = re.compile(rb" / tick (\d{3,4})\x1b\[65;1H")
     with Session(command, cols=121, rows=65) as s:
-        s.until(b" / tick 000")
-        def recent_ticks(raw):
-            return (int(n) for n in complete_tick.findall(raw[-12000:]))
-        s.until(lambda raw: any(n >= 282 for n in recent_ticks(raw)), timeout=14)
+        s.cursor_reply(1, 65)
+        s.cursor_reply(2, 65)
+        s.until(lambda raw: raw.count(s.bottom) >= 2)
+        s.until(lambda _: time.monotonic() - s.start >= 11.80, timeout=14)
         if stall:
-            # Keep output unavailable across the boundary; once the tty
-            # accepts writes the player should show current, not queued, ticks.
+            # Hold output unavailable over the clock join.
             termios.tcflow(s.slave, termios.TCOOFF)
             try:
                 time.sleep(0.42)
             finally:
                 termios.tcflow(s.slave, termios.TCOON)
-        s.until(lambda raw: any(8 <= n <= 32 for n in recent_ticks(raw)), timeout=2)
+        s.until(lambda _: time.monotonic() - s.start >= 12.45, timeout=2)
         assert s.proc.poll() is None and LEAVE not in s.raw
         os.write(s.master, b"q")
         raw, err, elapsed = s.end(0, timeout=2)
-        assert_scope(raw)
-        ticks = [int(n) for n in complete_tick.findall(raw)]
-        joins = [i for i in range(1, len(ticks)) if ticks[i] < ticks[i - 1]]
-        assert len(joins) == 1, joins
-        join, = joins
-        assert ticks[:join] == sorted(set(ticks[:join]))
-        assert ticks[join:] == sorted(set(ticks[join:]))
+        assert not any(token in raw for token in (ENTER, LEAVE, b"\x1b[2J", b" / tick "))
+        first, last, count, field = timing_output(err)
+        before, after = (tuple(map(int, label.split(b":"))) for label in field(b"join").split(b"-"))
+        assert first[0] == 0 and last[0] == 1 and last[1] >= 6, err
+        assert before[0] == 0 and after[0] == 1
         if stall:
-            assert ticks[join - 1] >= 282 and 1 <= ticks[join] <= 24, ticks[join-3:join+3]
+            assert before[1] >= 280 and 1 <= after[1] <= 24, err
         else:
-            assert ticks[join - 1] >= 285 and ticks[join] <= 2, ticks[join-3:join+3]
+            assert before[1] >= 285 and after[1] <= 2, err
         assert 11.9 <= elapsed < 14, elapsed
-        assert int(re.search(rb"written=(\d+) ", err)[1]) == len(ticks), err
-        assert int(re.search(rb"timing_samples=(\d+) ", err)[1]) <= 288, err
+        # One extra lower-anchor positioning was sent before the first draw.
+        assert count + 1 == raw.count(s.bottom), err
+        assert int(field(b"timing_samples")) <= 288, err
         assert b"playback=loop" in err and b"restoration was incomplete" not in err
     case = " with flow control" if stall else ""
-    print(f"PASS default loop{case}: tick {ticks[join - 1]:03} to {ticks[join]:03}; q restores")
+    print(f"PASS inline default loop{case}: phase {before} to {after}; q restores")
 
 
 def test_custom_duration(binary):
-    with Session([binary, "--measure", "--once", "--duration", "12", "--direction", "forward"],
+    with Session([binary, "--island", "--measure", "--once", "--duration", "12", "--direction", "forward"],
                  cols=121, rows=65) as s:
         raw, err, elapsed = s.end(0, timeout=15)
         assert_scope(raw)
-        ticks = [int(value) for value in TICK.findall(raw)]
-        assert ticks == sorted(set(ticks)) and ticks[0] <= 3 and 284 <= ticks[-1] < 288
-        assert b"12 seconds / q or Ctrl-C" in raw
-        assert re.search(rb"written=\d+/288\b", err)
+        first, last, count, field = timing_output(err)
+        assert first[0] == last[0] == 0 and first[1] <= 3 and 284 <= last[1] < 288, err
+        assert field(b"written").endswith(b"/288") and count == raw.count(s.bottom), err
         assert b"duration=12s direction=forward" in err and b"playback=once" in err
         assert 11.9 <= elapsed < 15, elapsed
-    print(f"PASS 12-second forward completion: {elapsed:.6f} s, {len(ticks)}/288 ticks")
+    print(f"PASS 12-second forward completion: {elapsed:.6f} s, {count}/288 ticks")
+
+
+def test_inline(binary):
+    # Synthetic CPR positions model a normal foreground shell and a reflow
+    # moving both cursor markers. A real VTE resize is verified separately.
+    with Session([binary], cols=165, rows=55) as s:
+        s.cursor_reply(1, 55)
+        s.cursor_reply(2, 55)
+        s.until("•".encode())
+        s.until(lambda raw: raw.count(s.bottom) >= 3)
+        first = len(s.raw)
+
+        s.geometry(145, 50)
+        s.cursor_reply(3, 50)
+        s.cursor_reply(4, 7)
+        s.until(lambda raw: b"\x1b[7;1H\x1b[2K" in raw[first:] and
+                "•".encode() in raw[first:])
+        s.until(lambda raw: raw[first:].count(s.bottom) >= 3)
+        os.write(s.master, b"q")
+        raw, err, _ = s.end(0)
+        assert not err
+        assert raw.count(b"\n") == 41
+        assert raw.endswith(b"\x1b[7;1H")
+        for packet, top, below in ((raw[:first], 14, 55), (raw[first:], 7, 50)):
+            assert all(top <= int(row) <= below
+                       for row in re.findall(rb"\x1b\[(\d+);\d+H", packet))
+        for token in (ENTER, LEAVE, b"\x1b[2J", b"\x1b[3J", b"oops /", b" / tick "):
+            assert token not in raw, token
+    with Session([binary], cols=165, rows=55) as s:
+        s.cursor_reply(1, 55, 3)
+        raw, err, _ = s.end(1)
+        assert raw == CURSOR_QUERY and b"fresh line" in err
+    with Session([binary], cols=165, rows=55) as s:
+        raw, err, _ = s.end(1, timeout=1)
+        assert raw == CURSOR_QUERY and b"did not report its cursor position" in err
+    with Session([binary], cols=165, rows=55) as s:
+        s.cursor_reply(1, 55)
+        s.cursor_reply(2, 55)
+        s.until(lambda raw: raw.count(s.bottom) >= 2)
+        s.geometry(145, 50)
+        s.cursor_reply(3, 49)
+        s.cursor_reply(4, 50)  # Reversed markers do not establish ownership.
+        raw, err, _ = s.end(1)
+        assert b"cannot locate reserved inline rows" in err
+        assert b"\x1b[2K" not in raw and b"\x1b[2J" not in raw
+    print("PASS inline only repaints the reserved rows, rejects a mid-line launch, and clears on q")
+
+
+def test_inline_shell(binary):
+    with Session(["bash", "--noprofile", "--norc", "-i"], cols=165, rows=55,
+                 stderr_in_tty=True) as s:
+        s.until(b"OOPS_TEST_SHELL> ")
+        path = "'" + binary.replace("'", "'\"'\"'") + "'"
+        os.write(s.master, b"printf 'PRIOR_%s\\n' OUTPUT\n")
+        s.until(b"PRIOR_OUTPUT")
+        for run, key, status in ((0, b"q", 0), (1, b"\x03", 130)):
+            pos = len(s.raw)
+            os.write(s.master, (
+                "previous=$(stty -g); " + path
+                + "; code=$?; if [[ $(stty -g) = $previous ]]; then "
+                + "printf 'CHECK_%s_OK\\n' \"$code\"; fi\n"
+            ).encode())
+            s.cursor_reply(run * 2 + 1, 55)
+            s.cursor_reply(run * 2 + 2, 55)
+            s.until(lambda raw: "•".encode() in raw[pos:])
+            os.write(s.master, key)
+            s.until(f"CHECK_{status}_OK".encode())
+        os.write(s.master, b"printf 'AFTER_%s\\n' OK\n")
+        s.until(b"AFTER_OK")
+        os.write(s.master, b"exit\n")
+        raw, err, _ = s.end(0)
+        assert not err and raw.count(CURSOR_QUERY) == 4
+        assert raw.index(b"PRIOR_OUTPUT") < raw.index("•".encode()) < raw.index(b"AFTER_OK")
+        assert not any(token in raw for token in (ENTER, LEAVE, b"\x1b[2J", b"\x1b[3J"))
+    print("PASS inline repeated normal-shell runs restore q/Ctrl-C; prior output and next command remain")
 
 
 def tests(binary, *, full, strict):
@@ -465,6 +559,7 @@ def tests(binary, *, full, strict):
         (["--version"], 0, b"oops 0.0.1"),
         (["--bad-argument"], 2, b"unknown option"),
         ([], 2, b"not a terminal"),
+        (["--island"], 2, b"not a terminal"),
         (["--check"], 2, b"not a terminal"),
     ]:
         result = subprocess.run(
@@ -514,7 +609,7 @@ def tests(binary, *, full, strict):
     print("PASS redirected input does not touch the terminal")
 
     for cols, rows in [(92, 45), (365, 169)]:
-        with Session([binary], cols=cols, rows=rows) as s:
+        with Session([binary, "--island"], cols=cols, rows=rows) as s:
             s.until(f"\x1b[{rows};1H".encode())
             os.write(s.master, b"q")
             raw, err, _ = s.end(0)
@@ -531,8 +626,8 @@ def tests(binary, *, full, strict):
         (signal.SIGQUIT, 131),
         (signal.SIGTSTP, 148),
     ]:
-        with Session([binary]) as s:
-            s.until(b" / tick 000")
+        with Session([binary, "--island"]) as s:
+            s.until(s.bottom)
             s.keys_active()
             os.kill(s.proc.pid, sig)
             raw, err, elapsed = s.end(code, timeout=1)
@@ -540,8 +635,8 @@ def tests(binary, *, full, strict):
             assert not err and elapsed < 1
     print("PASS SIGINT/TERM/HUP/QUIT/TSTP exit, owned cleanup, inherited tty state preserved")
 
-    with Session([binary]) as s:
-        s.until(b" / tick 000")
+    with Session([binary, "--island"]) as s:
+        s.until(s.bottom)
         s.keys_active()
         os.write(s.master, b"q")
         raw, err, elapsed = s.end(0, timeout=1)
@@ -549,7 +644,7 @@ def tests(binary, *, full, strict):
         assert not err and elapsed < 1
     print("PASS q exits without Enter and restores termios")
 
-    with Session([binary]) as s:
+    with Session([binary, "--island"]) as s:
         s.until(b"\x1b[86;1H")
         s.geometry(200, 90)
         s.until(lambda raw: raw.count(b"\x1b[2J") >= 2)
@@ -559,7 +654,7 @@ def tests(binary, *, full, strict):
         assert b"need at least" in err and elapsed < 1
     print("PASS wider resize recenters and below-minimum resize exits with cleanup")
 
-    with Session([binary]) as s:
+    with Session([binary, "--island"]) as s:
         s.until(ENTER)
         time.sleep(0.16)  # deliberately let the kernel output queue back up
         os.kill(s.proc.pid, signal.SIGINT)
@@ -570,7 +665,7 @@ def tests(binary, *, full, strict):
 
     # If the terminal never consumes its input, cleanup cannot be promised.
     # Even diagnostics on that same tty must not block shutdown indefinitely.
-    with Session([binary], stderr_in_tty=True) as s:
+    with Session([binary, "--island"], stderr_in_tty=True) as s:
         s.until(ENTER)
         time.sleep(0.16)
         os.kill(s.proc.pid, signal.SIGINT)
@@ -579,25 +674,24 @@ def tests(binary, *, full, strict):
         assert elapsed < 1.5
     print("PASS stopped PTY reader cannot block signal exit and diagnostics indefinitely")
 
-    with Session([binary]) as s:
+    with Session([binary, "--island", "--measure"]) as s:
         s.until(b"\x1b[86;1H")
         os.kill(s.proc.pid, signal.SIGSTOP)
         time.sleep(0.65)
         os.kill(s.proc.pid, signal.SIGCONT)
-        s.until(lambda raw: len(TICK.findall(raw)) >= 3)
+        s.until(lambda raw: raw.count(s.bottom) >= 3)
         os.kill(s.proc.pid, signal.SIGTERM)
         raw, err, _ = s.end(143)
-        ticks = [int(n) for n in TICK.findall(raw)]
         assert_scope(raw)
-        assert not err and max(b - a for a, b in zip(ticks, ticks[1:])) >= 4, ticks
-        assert ticks == sorted(set(ticks)), ticks
+        _, _, count, field = timing_output(err)
+        assert count >= 3 and int(field(b"max_gap")) >= 4, err
     print("PASS blocked schedule skips stale ticks instead of replaying a FIFO")
 
     # Fill the kernel tty queue after a valid frame. A temporary reader
     # stall exceeding the packet budget must not end the 30-second run.
     # Repeat during full repaint as well; that interrupted repaint must
     # not become the diff baseline.
-    with Session([binary, "--measure"], cols=290, rows=97) as s:
+    with Session([binary, "--island", "--measure"], cols=290, rows=97) as s:
         bottom = b"\x1b[97;1H"
         s.partial_next_frame(bottom, force_repaint=embedded)
         before_recoveries = s.raw.count(RESYNC)
@@ -613,9 +707,8 @@ def tests(binary, *, full, strict):
         os.write(s.master, b"q")
         raw, err, _ = s.end(0)
         assert_scope(raw)
-        ticks = [int(n) for n in TICK.findall(raw)]
-        assert ticks == sorted(set(ticks)) and ticks[-1] >= 16, ticks
-        assert max(b - a for a, b in zip(ticks, ticks[1:])) >= 7, ticks
+        _, last, _, field = timing_output(err)
+        assert last[1] >= 16 and int(field(b"max_gap")) >= 7, err
         report = re.search(rb"dropped_write=(\d+) partial_write=(\d+)", err)
         assert report and int(report[2]) >= 2 and int(report[1]) >= int(report[2]), err
         assert b"timed out" not in err
@@ -629,7 +722,7 @@ def tests(binary, *, full, strict):
     # Exercise line-discipline flow control as well as a full kernel
     # queue. Depending on scheduling, TCOOFF may start between frame
     # packets or when the next packet has already sent a prefix.
-    with Session([binary, "--measure"], cols=165, rows=55) as s:
+    with Session([binary, "--island", "--measure"], cols=165, rows=55) as s:
         s.until(b"\x1b[55;1H")
         termios.tcflow(s.slave, termios.TCOOFF)
         try:
@@ -637,7 +730,7 @@ def tests(binary, *, full, strict):
             assert s.proc.poll() is None
         finally:
             termios.tcflow(s.slave, termios.TCOON)
-        s.until(lambda raw: any(int(n) >= 8 for n in TICK.findall(raw)))
+        s.until(lambda raw: raw.count(s.bottom) >= 2)
         os.write(s.master, b"q")
         raw, err, _ = s.end(0)
         assert_scope(raw)
@@ -648,7 +741,7 @@ def tests(binary, *, full, strict):
 
     # Resume a recovery-waiting player with a key, not writable output.
     # CAN must make even a partially submitted escape harmless before exit.
-    with Session([binary], cols=290, rows=97) as s:
+    with Session([binary, "--island"], cols=290, rows=97) as s:
         s.partial_next_frame(b"\x1b[97;1H", force_repaint=embedded)
         before_recoveries = s.raw.count(RESYNC)
         time.sleep(0.48)
@@ -663,7 +756,7 @@ def tests(binary, *, full, strict):
     # Resize right as the next packet is being received. The remaining bytes
     # may reach the tty before ioctl on a faster runner. Inspect the accepted
     # stream rather than assuming that a partial read implies a partial write.
-    with Session([binary], cols=290, rows=97) as s:
+    with Session([binary, "--island"], cols=290, rows=97) as s:
         before = b"\x1b[97;1H"
         after = b"\x1b[85;1H"
         s.until(before)
@@ -688,19 +781,19 @@ def tests(binary, *, full, strict):
         quoted_path = "'" + binary.replace("'", "'\"'\"'") + "'"
         os.write(s.master, (
             "stty_before=$(stty -g); " + quoted_path
-            + "; r=$?; if [[ $(stty -g) = $stty_before ]]; then "
+            + " --island; r=$?; if [[ $(stty -g) = $stty_before ]]; then "
             + "printf 'CHECK_%s_OK\\n' \"$r\"; fi\n"
         ).encode())
-        s.until(b" / tick 000")
+        s.until(s.bottom)
         os.write(s.master, b"\x03")
         s.until(b"CHECK_130_OK")
         os.write(s.master, (
             "stty_before=$(stty -g); " + quoted_path
-            + "; r=$?; if [[ $(stty -g) = $stty_before ]]; then "
+            + " --island; r=$?; if [[ $(stty -g) = $stty_before ]]; then "
             + "printf 'CHECK_%s_OK\n' \"$r\"; fi\n"
         ).encode())
         s.until(lambda raw: raw.count(ENTER) == 2)
-        s.until(lambda raw: raw.count(b" / tick 000") == 2)
+        s.until(lambda raw: raw.count(s.bottom) >= 2)
         os.write(s.master, b"q")
         s.until(b"CHECK_0_OK")
         os.write(s.master, b"exit\n")
@@ -711,26 +804,26 @@ def tests(binary, *, full, strict):
         assert b"failed" not in err
     print("PASS interactive Bash returns after q and keyboard Ctrl-C with original stty")
 
+    test_inline(binary)
+    test_inline_shell(binary)
     test_default_loop(binary)
     if full:
         test_default_loop(binary, stall=True)
         test_custom_duration(binary)
-        with Session([binary, "--measure", "--once"]) as s:
+        with Session([binary, "--island", "--measure", "--once"]) as s:
             raw, err, elapsed = s.end(0, timeout=34)
             assert_scope(raw)
-            ticks = [int(n) for n in TICK.findall(raw)]
-            assert ticks == sorted(set(ticks)), "duplicates or catch-up ordering"
-            assert ticks[0] <= 3 and ticks[-1] >= 716, (ticks[:5], ticks[-5:])
+            first, last, count, field = timing_output(err)
+            assert first[0] == last[0] == 0 and first[1] <= 3 and last[1] >= 716, err
             assert b"grid=" in err and b"trace_p95/max_us=" in err
             print(err.decode().strip())
             assert 29.9 <= elapsed < 34, elapsed
             if strict:
-                assert ticks == list(range(720)), f"only {len(ticks)} distinct ticks"
-        print(f"PASS natural completion: {elapsed:.6f} s, {len(ticks)}/720 ticks, {len(raw)} bytes")
+                assert count == 720, f"only {count} distinct ticks"
+        print(f"PASS natural completion: {elapsed:.6f} s, {count}/720 ticks, {len(raw)} bytes")
         if not strict:
-            with Session([binary, "--measure", "--once"], cols=290, rows=97) as s:
-                s.until(lambda raw: any(int(n) >= 710 for n in TICK.findall(raw[-9000:])),
-                        timeout=32)
+            with Session([binary, "--island", "--measure", "--once"], cols=290, rows=97) as s:
+                s.until(lambda _: time.monotonic() - s.start >= 29.68, timeout=32)
                 # Keep the tty congested across the absolute run deadline,
                 # then drain promptly enough to receive the bounded cleanup.
                 time.sleep(max(0.0, 30.08 - (time.monotonic() - s.start)))
