@@ -27,6 +27,10 @@ impl InteriorMatte {
         }
     }
 
+    pub(super) fn dot_depth(&self, x: usize, y: usize) -> u8 {
+        self.depth[grid(x + 1, y + 1)]
+    }
+
     pub(super) fn apply(&mut self, gray: &[u8], occupied: &[u8], destination: &mut [u32]) {
         for y in 1..=ROWS {
             for x in 1..=COLS {

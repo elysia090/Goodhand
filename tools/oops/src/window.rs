@@ -1,4 +1,5 @@
-//! Optional GTK desktop transport; no contribution to raster geometry or shade.
+//! GTK presentation of the authored raster. Black-pane placement and support are display-only.
+mod bearing_tone;
 mod controls;
 mod interior_matte;
 mod sys;
@@ -24,7 +25,7 @@ const PANEL_HEIGHT: usize = 560;
 const BLACK_WIDTH: usize = 1016;
 const BLACK_HEIGHT: usize = 462;
 const BLACK_CLIENT: [usize; 2] = [1024, 576];
-const BLACK_UP: i32 = 8;
+const BLACK_SHIFT: [i32; 2] = [-32, -8];
 const MIN_SCALE: f64 = 0.75;
 const PANEL_CORNER: f64 = 7.0;
 const BLACK_CORNER: f64 = 5.0;
@@ -35,6 +36,7 @@ struct Canvas {
     width: usize,
     height: usize,
     crop_top: i32,
+    offset_x: i32,
     inset: [usize; 2],
 }
 
@@ -42,11 +44,11 @@ impl Canvas {
     fn frame(
         (lo, hi): ([i32; 2], [i32; 2]),
         [width, height]: [usize; 2],
-        lift: i32,
+        shift: [i32; 2],
         vertical_gutter: i32,
     ) -> Option<Self> {
-        let left = (WIDTH as i32 - width as i32) / 2;
-        let top = (lo[1] + hi[1] - height as i32).div_euclid(2) + lift;
+        let left = (WIDTH as i32 - width as i32) / 2 - shift[0];
+        let top = (lo[1] + hi[1] - height as i32).div_euclid(2) - shift[1];
         if lo[0] < left
             || hi[0] > left + width as i32
             || lo[1] - top < vertical_gutter
@@ -58,6 +60,7 @@ impl Canvas {
             width,
             height,
             crop_top: top,
+            offset_x: shift[0],
             inset: [0, 0],
         })
     }
@@ -89,12 +92,12 @@ struct Apertures {
 impl Apertures {
     fn new(bounds: ([i32; 2], [i32; 2])) -> io::Result<Self> {
         let standard =
-            Canvas::frame(bounds, [PANEL_WIDTH, PANEL_HEIGHT], 0, 16).ok_or_else(|| {
+            Canvas::frame(bounds, [PANEL_WIDTH, PANEL_HEIGHT], [0, 0], 16).ok_or_else(|| {
                 io::Error::other("this archive cannot fit the wide panel without cropping")
             })?;
         // Fixed compact presentation for the reviewed black artwork. If
         // another embedded archive is too large, keep the wider-safe framing.
-        let black = Canvas::frame(bounds, [BLACK_WIDTH, BLACK_HEIGHT], BLACK_UP, 6)
+        let black = Canvas::frame(bounds, [BLACK_WIDTH, BLACK_HEIGHT], BLACK_SHIFT, 6)
             .map(|mut aperture| {
                 // The 16:9 starting client contains a visibly wide aperture.
                 // Transparent insets are fixed so a resize changes the
@@ -148,7 +151,8 @@ impl Placement {
 
     fn raster_origin(self, canvas: Canvas) -> (f64, f64) {
         (
-            (f64::from(self.size.0) - WIDTH as f64 * self.scale) / 2.0,
+            (f64::from(self.size.0) - WIDTH as f64 * self.scale) / 2.0
+                + f64::from(canvas.offset_x) * self.scale,
             -f64::from(canvas.crop_top) * self.scale,
         )
     }
@@ -211,7 +215,12 @@ impl Window {
     fn select_appearance(&mut self, appearance: WindowAppearance) {
         let previous = self.canvas();
         let scale = self.placement().scale.max(MIN_SCALE);
+        let regrade =
+            (self.appearance == WindowAppearance::Safe) != (appearance == WindowAppearance::Safe);
         self.appearance = appearance;
+        if regrade {
+            self.paint();
+        }
         let canvas = self.canvas();
         if previous != canvas {
             let (min_width, min_height) = canvas.minimum();
@@ -276,6 +285,12 @@ impl Window {
     fn update(&mut self, pose: u32) -> io::Result<()> {
         self.renderer
             .render(pose, &mut self.light, Some(&mut self.alpha))?;
+        self.paint();
+        self.pose = pose;
+        Ok(())
+    }
+
+    fn paint(&mut self) {
         for (pixel, (&gray, &alpha)) in self.argb.iter_mut().zip(self.light.iter().zip(&self.alpha))
         {
             *pixel = if alpha != 0 {
@@ -285,8 +300,9 @@ impl Window {
             };
         }
         self.matte.apply(&self.light, &self.alpha, &mut self.argb);
-        self.pose = pose;
-        Ok(())
+        if self.appearance == WindowAppearance::Safe {
+            bearing_tone::apply(&self.matte, &self.light, &mut self.argb);
+        }
     }
 }
 
@@ -655,7 +671,7 @@ mod tests {
         assert_eq!(black.client_at(1.0), (1024, 576));
         let p = Placement::new(black, 1024, 576);
         assert_eq!((p.size, p.scale, p.origin), ((1016, 462), 1.0, (4, 57)));
-        assert_eq!(p.raster_origin(black), (8., -120.));
+        assert_eq!(p.raster_origin(black), (-24., -120.));
         let narrower = Placement::new(black, 1023, 576);
         let shorter = Placement::new(black, 1024, 575);
         assert!(narrower.scale < 1.0 && shorter.scale < 1.0);
@@ -680,6 +696,7 @@ mod tests {
             width: PANEL_WIDTH,
             height: PANEL_HEIGHT,
             crop_top: 40,
+            offset_x: 0,
             inset: [0, 0],
         };
         for (width, height, panelsize, origin, scale) in [
@@ -724,6 +741,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn black_support_changes_only_the_interior_of_existing_dots() {
+        let mut state = Window::new(
+            null_mut(),
+            Repeat::Loop,
+            WindowAppearance::Clear,
+            Cycle::default(),
+        )
+        .unwrap();
+        state.update(0).unwrap();
+        let clear = state.argb.clone();
+        state.appearance = WindowAppearance::Safe;
+        state.paint();
+        let spec = RasterSpec::REFERENCE;
+        let mut changes = 0;
+        for (i, (&black, &before)) in state.argb.iter().zip(&clear).enumerate() {
+            if black == before {
+                continue;
+            }
+            changes += 1;
+            let [aa, ar, ag, ab] = before.to_be_bytes();
+            let [ba, br, bg, bb] = black.to_be_bytes();
+            assert_eq!((aa, ba), (255, 255));
+            let gain = br - ar;
+            assert!((1..=9).contains(&gain));
+            assert_eq!((bg - ag, bb - ab), (gain, gain));
+            let (x, y) = (i % WIDTH, i / WIDTH);
+            let col = (x - spec.origin[0]) / spec.pitch[0];
+            let row = (y - spec.origin[1]) / spec.pitch[1];
+            assert!(state.matte.dot_depth(col, row) > 2);
+        }
+        if cfg!(goodhand_w5_profile) {
+            assert!(changes > 0);
+        }
+        state.appearance = WindowAppearance::Clear;
+        state.paint();
+        assert_eq!(state.argb, clear);
     }
 
     #[test]

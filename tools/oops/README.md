@@ -33,11 +33,13 @@ reads the desktop.
   artwork.
 
 The reviewed black pane opens in a 1024×576 client with a 1016×462
-visible box inside. It uses tighter framing, a fixed slight upward
-placement and 5 px rounded corners on both fill and hover outline.
-Drag the visible black rim.
-The foreground grade and native scale are unchanged. A larger
-embedded scene can retain the wide framing rather than clip.
+visible box inside. It uses tighter framing, a fixed leftward and
+slightly upward placement, and 5 px rounded corners on both fill and
+hover outline. Drag the visible black rim. A faint supporting gray
+inside the lower forearm is exclusive to the black pane. It changes
+only the tone of existing interior dots, not the source grid, native
+scale or time. A larger embedded scene can retain the wide framing
+rather than clip.
 
 Use the appearance controls or set `window_appearance` in the explicit
 config. `safe` is the default pure black pane. `clear` is the 1120×560
