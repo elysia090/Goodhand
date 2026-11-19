@@ -32,7 +32,7 @@ three sample tiles on each side, is fit onto the terminal grid at a
 uniform scale. The framing and center are fixed across poses. This
 keeps the art larger without cropping at the default zoom. At small
 sizes, some detail is necessarily lost to the coarser cell grid.
-The original reviewed canvas, pixels, and pose timing are unchanged. The result is a cell
+The standard archive presentation keeps the reviewed canvas, gray and timing. The result is a cell
 presentation, not pixel-exact video or a guarantee about every monitor,
 font, frame submission, or screen refresh.
 
@@ -169,6 +169,43 @@ package. CI also exercises the embedded path with synthetic data.
     cargo test --offline --locked
     cargo clippy --offline --locked --all-targets -- -D warnings
     python3 tests/pty_smoke.py target/release/oops --full
+
+### W5 shading build
+
+W5 groups the upper forearm return into a quieter dark plane and gives
+the lower bearing plane more weight. It is a build-time opt-in layered on
+the **exact reviewed W4 occupancy and tone pair**. It changes gray codes
+only at the reviewed angles; it does not change glyph positions,
+framing, turn order, or the 24 Hz playback clock.
+
+On GNU/Linux, with `sha256sum` on the build host and the previously
+verified W4 `shape.ghs` and `tone.ght` already available locally:
+
+    GOODHAND_TONE_PROFILE=w5 \
+      GOODHAND_PLAYBACK_DIR=/absolute/path/to/verified-w4 \
+      cargo build --manifest-path tools/oops/Cargo.toml --offline --release --locked
+
+The build verifies both inputs before embedding them. It rejects other
+archives rather than applying W5 to unrelated images. This repository
+supplies the W5 rules and coefficients, not the required W4 archive.
+Neither the public offline references nor a clean source-only build
+reproduce the reviewed W5 image. With no archive, the executable runs the
+procedural developer scene. With an archive but no tone profile, it
+uses the archive's original tones, as before.
+
+In a 116-column × 41-row terminal with a dark background, check and
+play the W5 build from a normal prompt:
+
+    ./tools/oops/target/release/oops --cell-aspect 0.5 --check
+    ./tools/oops/target/release/oops --cell-aspect 0.5 --once
+
+`--check` reports whether W5 is active for the planned layout. The
+reviewed view uses a 115 × 27 Braille drawing grid, 0.5 cell aspect, 30-second
+reverse turn, default zoom and brightness, and zero offsets. Other
+settings or drawing grids use the original embedded tones. There is no
+asset, checksum utility, or source dependency at runtime.
+
+### Verification
 
 Native lossless verification compares the ordered, decoded 2×2-dot raster
 and its timestamps; kernel PTY checks separately exercise the terminal

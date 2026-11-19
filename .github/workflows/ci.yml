@@ -107,6 +107,11 @@ jobs:
           GOODHAND_PLAYBACK_DIR="$fixture" cargo +"$RUST_TOOLCHAIN" test --manifest-path "$manifest" --offline --locked --release
           GOODHAND_PLAYBACK_DIR="$fixture" cargo +"$RUST_TOOLCHAIN" build --manifest-path "$manifest" --offline --locked --release
           python3 tools/oops/tests/pty_smoke.py "$CARGO_TARGET_DIR/release/oops"
+          if GOODHAND_TONE_PROFILE=w5 GOODHAND_PLAYBACK_DIR="$fixture" cargo +"$RUST_TOOLCHAIN" check --manifest-path "$manifest" --offline --locked > "$RUNNER_TEMP/w5-guard.log" 2>&1; then
+            echo "W5 accepted a different archive"
+            exit 1
+          fi
+          grep -F 'W5 requires the exact reviewed W4 archive' "$RUNNER_TEMP/w5-guard.log"
           mv "$fixture/tone.ght" "$fixture/valid.ght"
           if GOODHAND_PLAYBACK_DIR="$fixture" cargo +"$RUST_TOOLCHAIN" check --manifest-path "$manifest" --offline --locked; then
             echo "Embedded build accepted a missing tone archive" >&2

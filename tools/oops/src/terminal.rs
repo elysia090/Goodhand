@@ -990,6 +990,15 @@ pub fn run(
             painter.frame_size().0,
             painter.frame_size().1,
         );
+        #[cfg(goodhand_w5_profile)]
+        println!(
+            "oops: W5 shading {} at this drawing layout",
+            if layout.w5_active() {
+                "active"
+            } else {
+                "inactive (using unmodified review tones)"
+            }
+        );
         return 0;
     }
     if let Err(error) = install_signals() {

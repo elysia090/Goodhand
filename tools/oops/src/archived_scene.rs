@@ -5,8 +5,10 @@ use crate::projection::Projection;
 use goodhand::{RasterSpec, Sequence, ToneSequence};
 use std::io;
 
-#[cfg(goodhand_embedded_playback)]
+#[cfg(all(goodhand_embedded_playback, not(goodhand_w5_profile)))]
 pub const LABEL: &str = "embedded review";
+#[cfg(goodhand_w5_profile)]
+pub const LABEL: &str = "embedded review with W5 shading for the reviewed view";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Framing {

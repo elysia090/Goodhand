@@ -1,4 +1,7 @@
 //! Terminal projection and encoding, independent of which scene supplies the dots.
+#[cfg(any(test, goodhand_w5_profile))]
+#[path = "w5_tones.rs"]
+mod w5_tones;
 #[cfg(goodhand_embedded_playback)]
 use crate::archived_scene::{Archive, pose_at_tick};
 use crate::dots::DotCell;
@@ -156,6 +159,11 @@ impl Layout {
         }
     }
 
+    #[cfg(goodhand_w5_profile)]
+    pub fn w5_active(self) -> bool {
+        w5_tones::supports(self)
+    }
+
     fn projection(self) -> io::Result<Projection> {
         let [x, y] = self.settings.renderer.subdivisions();
         Projection::new(
@@ -246,6 +254,10 @@ impl Painter {
         let cols = usize::from(layout.cols);
         self.new.resize(cols * usize::from(layout.rows), None);
         settings.renderer.pack(&self.samples, cols, &mut self.new);
+        #[cfg(goodhand_w5_profile)]
+        if let Some(pose) = self.archive.selected_pose() {
+            w5_tones::apply(layout, pose, &mut self.new);
+        }
         // Adjust art gray only, never the presence of a dot or the UI colors.
         if settings.brightness != crate::settings::Brightness::default() {
             for cell in self.new.iter_mut().flatten() {
