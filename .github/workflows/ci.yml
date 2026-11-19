@@ -59,7 +59,10 @@ jobs:
           lfs: false
           submodules: false
           sparse-checkout-cone-mode: false
+          # Cargo fingerprints nested build scripts using ancestor ignore rules.
+          # Fetch this text file too so it exists in the sparse, partial clone.
           sparse-checkout: |
+            /.gitignore
             /Cargo.toml
             /Cargo.lock
             /src/
