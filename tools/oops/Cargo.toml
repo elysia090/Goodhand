@@ -12,3 +12,6 @@ strip = true
 
 [dependencies]
 goodhand = { path = "../.." }
+
+[build-dependencies]
+goodhand = { path = "../.." }

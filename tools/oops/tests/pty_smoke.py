@@ -70,12 +70,27 @@ class Session:
             assert self.proc.poll() is None, (self.proc.returncode, bytes(self.raw[-500:]))
             self.pump()
 
-    def partial_next_frame(self, bottom):
-        """Read a prefix of a large diff, but not its closing cursor move."""
+    def partial_next_frame(self, bottom, *, force_repaint=False):
+        """Wait for a substantial open packet, skipping completed holds."""
         self.until(bottom)
-        start = self.raw.index(bottom) + len(bottom)
-        self.until(lambda raw: len(raw) >= start + 1024)
-        assert bottom not in self.raw[start:], "already received the next full frame"
+        after = self.raw.rindex(bottom) + len(bottom)
+        if force_repaint:
+            # A sparse archived diff may fit the queue. A pixel-only
+            # viewport change keeps the same aspect and drawing dimensions
+            # but provokes a whole-picture packet, giving a real stall.
+            self.geometry(290, 97, (2900, 1940))
+
+        def pending_prefix(raw):
+            # Do not count short complete status packets on held poses.
+            start = raw.rindex(bottom) + len(bottom)
+            if force_repaint:
+                clear = raw.rfind(b"\x1b[2J", after)
+                if clear < start:
+                    return False
+                start = clear + len(b"\x1b[2J")
+            return len(raw) >= start + 1024
+
+        self.until(pending_prefix)
 
     def keys_active(self):
         current = termios.tcgetattr(self.slave)
@@ -218,7 +233,7 @@ def test_resize_wire_expectations():
             assert actual is result, raw
 
 
-def test_config(binary):
+def test_config(binary, embedded):
     def check(args, expected, pixels=(0, 0), env=None):
         with Session([binary, "--check", *args], cols=165, rows=55,
                      pixels=pixels, env=env) as s:
@@ -228,9 +243,11 @@ def test_config(binary):
 
     # The example itself should work, with no ambient config loaded.
     example = Path(__file__).resolve().parent.parent / "oops.example.conf"
-    check([], b"model grid 164 by 49, cell aspect 0.5000 (assumed), zoom 100%")
+    grid = b"162 by 52" if embedded else b"164 by 49"
+    check([], b"model grid " + grid + b", cell aspect 0.5000 (assumed), zoom 100%")
     check(["--config", example], b"cell aspect 0.5000 (assumed), zoom 100%")
-    check([], b"model grid 164 by 45, cell aspect 0.4667 (tty pixels), zoom 100%", (1155, 825))
+    rows = b"48" if embedded else b"45"
+    check([], b"model grid 164 by " + rows + b", cell aspect 0.4667 (tty pixels), zoom 100%", (1155, 825))
     check([], b"cell aspect 0.5000 (assumed)", (1155, 0))
 
     with tempfile.TemporaryDirectory() as directory:
@@ -240,7 +257,8 @@ def test_config(binary):
         default_location.mkdir()
         (default_location / "config").write_text("zoom=150\n", encoding="utf-8")
         check([], b"zoom 100%", env={"XDG_CONFIG_HOME": directory})
-        check(["--config", config], b"model grid 144 by 52, cell aspect 0.6000 (configured), zoom 125%")
+        cols = b"135" if embedded else b"144"
+        check(["--config", config], b"model grid " + cols + b" by 52, cell aspect 0.6000 (configured), zoom 125%")
         check(
             ["--zoom", "85", "--config", config],
             b"cell aspect 0.6000 (configured), zoom 85%",
@@ -290,7 +308,7 @@ def test_config(binary):
     print("PASS config example, per-setting CLI precedence, pitch source, and startup failures")
 
 
-def test_zoom_resize(binary):
+def test_zoom_resize(binary, embedded):
     for zoom in (50, 200):
         with Session([binary, "--measure", "--zoom", str(zoom)], cols=165, rows=55,
                      pixels=(1155, 825)) as s:
@@ -320,7 +338,8 @@ def test_zoom_resize(binary):
             os.write(s.master, b"q")
             raw, err, _ = s.end(0)
             assert_scope(raw)
-            assert f"grid=111x39 aspect=0.6000 pitch=tty zoom={zoom}%".encode() in err, err
+            grid = "111x42" if embedded else "111x39"
+            assert f"grid={grid} aspect=0.6000 pitch=tty zoom={zoom}%".encode() in err, err
     print("PASS zoom endpoints survive pixel-only, wider, and narrower TTY resizes")
 
 
@@ -348,8 +367,9 @@ def tests(binary, *, full, strict):
             assert not result.stdout
     print("PASS plain help, version, args and redirected stdout")
 
-    test_config(binary)
-    test_zoom_resize(binary)
+    embedded = b"This build plays embedded review." in subprocess.check_output([binary, "--help"])
+    test_config(binary, embedded)
+    test_zoom_resize(binary, embedded)
 
     for cols, rows in [(91, 45), (92, 44), (0, 0)]:
         with Session([binary], cols=cols, rows=rows) as s:
@@ -462,14 +482,17 @@ def tests(binary, *, full, strict):
     # not become the diff baseline.
     with Session([binary, "--measure"], cols=290, rows=97) as s:
         bottom = b"\x1b[97;1H"
-        s.partial_next_frame(bottom)
+        s.partial_next_frame(bottom, force_repaint=embedded)
+        before_recoveries = s.raw.count(RESYNC)
         time.sleep(0.48)
         assert s.proc.poll() is None, "a temporary stall ended playback"
-        s.until(lambda raw: RESYNC in raw and len(raw.rsplit(RESYNC, 1)[1]) >= 1024)
+        s.until(lambda raw: raw.count(RESYNC) > before_recoveries
+                and len(raw.rsplit(RESYNC, 1)[1]) >= 1024)
         assert bottom not in s.raw.rsplit(RESYNC, 1)[1], "already received the full repaint"
         time.sleep(0.48)
         assert s.proc.poll() is None, "a second stall ended playback"
-        s.until(lambda raw: raw.count(RESYNC) >= 2 and bottom in raw.rsplit(RESYNC, 1)[1])
+        s.until(lambda raw: raw.count(RESYNC) >= before_recoveries + 2
+                and bottom in raw.rsplit(RESYNC, 1)[1])
         os.write(s.master, b"q")
         raw, err, _ = s.end(0)
         assert_scope(raw)
@@ -509,13 +532,14 @@ def tests(binary, *, full, strict):
     # Resume a recovery-waiting player with a key, not writable output.
     # CAN must make even a partially submitted escape harmless before exit.
     with Session([binary], cols=290, rows=97) as s:
-        s.partial_next_frame(b"\x1b[97;1H")
+        s.partial_next_frame(b"\x1b[97;1H", force_repaint=embedded)
+        before_recoveries = s.raw.count(RESYNC)
         time.sleep(0.48)
         assert s.proc.poll() is None
         os.write(s.master, b"q")
         raw, err, _ = s.end(0, timeout=1)
         assert_scope(raw)
-        assert RESYNC not in raw and not err, err
+        assert raw.count(RESYNC) == before_recoveries and not err, err
     print("PASS q during the recovery wait restores without forcing a new frame")
 
     test_resize_wire_expectations()

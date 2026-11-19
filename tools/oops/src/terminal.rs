@@ -1,6 +1,8 @@
 //! Linux x86-64 terminal boundary. Fullscreen ownership is an explicit pilot
 //! precondition: launch in the main screen of a normal foreground VTE shell.
-use crate::arm_scene::{Display, Layout, MIN_HEIGHT, MIN_WIDTH, Painter, PitchSource, Size};
+use crate::arm_scene::{
+    CONTENT_LABEL, Display, Layout, MIN_HEIGHT, MIN_WIDTH, Painter, PitchSource, Size,
+};
 use crate::measurement::{Measurement, Timings};
 use crate::playback::{self, RUN_TIME};
 use crate::settings::Settings;
@@ -426,11 +428,15 @@ fn check_live(tty: &Terminal, deadline: Instant) -> io::Result<()> {
     tty.foreground()
 }
 
-fn play(screen: &Screen, settings: Settings, stats: &mut Measurement) -> io::Result<()> {
+fn play(
+    screen: &Screen,
+    settings: Settings,
+    stats: &mut Measurement,
+    painter: &mut Painter,
+) -> io::Result<()> {
     let start = Instant::now();
     let end = start + RUN_TIME;
     let mut packet = Vec::with_capacity(64_000);
-    let mut painter = Painter::default();
     let mut attempted = None;
     let mut awaiting_output = false;
     loop {
@@ -541,7 +547,7 @@ pub fn run(check_only: bool, measure: bool, settings: Settings) -> u8 {
     if check_only {
         let layout = Layout::fit(display, settings);
         println!(
-            "oops: {} columns by {} rows; model grid {} by {}, cell aspect {:.4} ({}), zoom {}%",
+            "oops: {} columns by {} rows; model grid {} by {}, cell aspect {:.4} ({}), zoom {}%; content: {CONTENT_LABEL}",
             display.size.cols,
             display.size.rows,
             layout.cols,
@@ -555,6 +561,13 @@ pub fn run(check_only: bool, measure: bool, settings: Settings) -> u8 {
         );
         return 0;
     }
+    let mut painter = match Painter::new() {
+        Ok(painter) => painter,
+        Err(error) => {
+            eprintln!("oops: cannot initialize playback: {error}");
+            return 2;
+        }
+    };
     if let Err(error) = install_signals() {
         eprintln!("oops: cannot install signal handlers: {error}");
         return 2;
@@ -569,7 +582,7 @@ pub fn run(check_only: bool, measure: bool, settings: Settings) -> u8 {
     let playback = screen
         .enter()
         .and_then(|()| screen.enable_keys())
-        .and_then(|()| play(&screen, settings, &mut stats));
+        .and_then(|()| play(&screen, settings, &mut stats, &mut painter));
     let cleanup = screen.restore();
     if let Some(report) = stats.report() {
         report_runtime(&report);

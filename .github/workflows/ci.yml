@@ -94,6 +94,27 @@ jobs:
           # Kernel PTY only. No GUI/presentation or artwork acceptance claim.
           python3 tools/oops/tests/pty_smoke.py tools/oops/target/release/oops --full
 
+      - name: Check the embedded playback build with synthetic inputs
+        run: |
+          fixture="$RUNNER_TEMP/review-fixture"
+          manifest=tools/oops/Cargo.toml
+          python3 tools/oops/tests/make_review_fixture.py "$fixture"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/embedded-playback"
+          GOODHAND_PLAYBACK_DIR="$fixture" cargo +"$RUST_TOOLCHAIN" clippy --manifest-path "$manifest" --offline --locked --all-targets -- -D warnings
+          GOODHAND_PLAYBACK_DIR="$fixture" cargo +"$RUST_TOOLCHAIN" test --manifest-path "$manifest" --offline --locked --release
+          GOODHAND_PLAYBACK_DIR="$fixture" cargo +"$RUST_TOOLCHAIN" build --manifest-path "$manifest" --offline --locked --release
+          python3 tools/oops/tests/pty_smoke.py "$CARGO_TARGET_DIR/release/oops"
+          mv "$fixture/tone.ght" "$fixture/valid.ght"
+          if GOODHAND_PLAYBACK_DIR="$fixture" cargo +"$RUST_TOOLCHAIN" check --manifest-path "$manifest" --offline --locked; then
+            echo "Embedded build accepted a missing tone archive" >&2
+            exit 1
+          fi
+          printf 'broken' > "$fixture/tone.ght"
+          if GOODHAND_PLAYBACK_DIR="$fixture" cargo +"$RUST_TOOLCHAIN" check --manifest-path "$manifest" --offline --locked; then
+            echo "Embedded build accepted an invalid tone archive" >&2
+            exit 1
+          fi
+
   msrv:
     # Cargo.toml declares 1.70; it has NOT been executed locally.
     # This blocking job tests that compatibility target on the first CI run.

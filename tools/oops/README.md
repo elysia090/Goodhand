@@ -1,29 +1,25 @@
-# oops 0.0.1 · procedural terminal pilot
+# oops 0.0.1 · terminal playback
 
-This pilot renders the Goodhand arm directly from its Rust model. It
-does not read or embed footage, raster frames, archived surfaces, or pose
-guides. The CLI samples the default base only; authored attributes are off.
+The packaged review runs as a single executable. From a normal foreground
+Xfce Terminal shell on GNU/Linux x86-64, run:
 
-From a normal foreground Xfce Terminal shell on GNU/Linux x86-64, run:
+    ./oops --check
+    ./oops
 
-    oops --check
-    oops
+The minimum terminal is 92 columns × 45 rows with UTF-8, a single-cell
+bullet and true color. Press q or Ctrl-C to stop early. The normal run
+stops on its own after 30 seconds. No config, video, guide, external
+artwork, Python, Rust installation or FFmpeg is required at runtime.
+The ELF uses the host's standard GNU/Linux loader and shared libraries.
 
-The minimum foreground terminal is 92 columns × 45 rows with a UTF-8
-single-cell bullet and true-color support. Maximize or zoom out if the
-window is too small. q and Ctrl-C stop playback; the normal run stops on
-its own after 30 seconds.
-
-One 24 Hz timeline turn decreases yaw from 0° to −360°. The current model
-is sampled at each available tick; nothing is loaded from old frames or
-replayed to catch up. There is one orthographic ray per active cell. The
-picture is centered in the drawing area (excluding the labels and the
-last column) and letterboxed without stretching. The grid is capped at
-220 columns and 80 rows to bound ray tracing. Resizing the window or
-changing the terminal font zoom recomputes the fit from the geometry
-reported by the terminal. The camera center and playback clock are not
-reset. No sub-cell detail or presentation cadence is guaranteed. Gray
-and occupancy remain separate.
+The review build holds its 288 native poses on the original 24 Hz clock
+(three and two ticks alternately). Occupancy and gray remain separate:
+black can be occupied. Nothing is fetched or reconstructed during
+playback. The fixed source canvas is sampled onto the terminal's cell
+grid with a uniform physical scale; no arbitrary stretching, contrast
+curve or interpolation between poses is applied. The result is a cell
+presentation, not pixel-exact video or a guarantee about every monitor,
+font, frame submission, or screen refresh.
 
 ### Framing and configuration
 
@@ -32,7 +28,7 @@ and occupancy remain separate.
     oops --config oops.example.conf --measure
 
 - `--zoom PERCENT` accepts an integer from 50 through 200. At 100 the
-  full model framing rectangle fits the drawable grid. Below 100 the
+  complete source canvas fits the drawable grid. Below 100 the
   drawing gets smaller around the same camera center; above 100 both
   axes enlarge uniformly and the edges can intentionally crop. The
   percentage is relative to the current fit, not to the terminal font
@@ -54,9 +50,10 @@ and occupancy remain separate.
   when overridden), and missing or unreadable explicit files stop
   startup before the app enters its alternate screen.
 
-`--check` prints the resolved zoom, aspect source, and model grid
-without entering the alternate screen. `--measure` prints those same
-settings for the last fully submitted frame, alongside process timings.
+`--check` prints the compiled content, resolved zoom, aspect source,
+and drawing grid without entering the alternate screen. `--measure`
+prints the grid, aspect and zoom of the last fully submitted frame
+alongside process timings.
 
 ### Playback and recovery
 
@@ -84,24 +81,28 @@ The dropped-write count includes these discarded submissions; partial-write
 is the subset that wrote some bytes. Timing is submission to the tty,
 not compositor or display timing.
 
-In one GNU/Linux x86-64 Xfce Terminal run per size (VTE 0.80.1, default
-base, width:height pitch assumed 1:2), the pilot observed:
+### Developer build and validation
 
-| Terminal | Model grid | Elapsed | Submitted | Trace / tty write p95 |
-| --- | --- | --- | --- | --- |
-| 165 × 55 | 164 × 49 | 30.006 s | 708 / 720 | 13.951 / 9.443 ms |
-| 290 × 97 | 220 × 66 | 30.005 s | 711 / 720 | 18.810 / 12.839 ms |
+The distribution build embeds only the reviewed 200×120 GHSH occupancy
+and matching GHT8 gray, with 288 poses at 24 Hz. The ordered 30-second hold
+schedule is fixed by the player. Supply the **absolute path** to a verified
+private directory containing `shape.ghs` and `tone.ght` at build time:
 
-Both runs and separate q and Ctrl-C tests restored the shell and its tty
-settings. These measurements describe one shared host and terminal. They do
-not guarantee every tick, 24 visible frames per second, the look at every
-font/size, or performance on other hardware.
+    GOODHAND_PLAYBACK_DIR=/absolute/path/to/verified-data \
+      cargo build --offline --release --locked
 
-The pilot builds into a single dynamically linked GNU/Linux x86-64 ELF
-with no runtime assets or external executable dependencies. The repository's
-Goodhand Cargo crate supplies the model at build time.
+An explicit directory with missing or invalid data fails the build, not
+falls back to a different scene. Check for `embedded review` in
+`target/release/oops --help` before packaging. Do not include the build
+input directory in the distribution. Source checks without that variable
+use the procedural developer scene; that executable is not the reviewed
+package. CI also exercises the embedded path with synthetic data.
 
-    cargo build --offline --release --locked
     cargo test --offline --locked
     cargo clippy --offline --locked --all-targets -- -D warnings
     python3 tests/pty_smoke.py target/release/oops --full
+
+Native lossless verification compares the ordered, decoded 2×2-dot raster
+and its timestamps; kernel PTY checks separately exercise the terminal
+geometry, deadlines and teardown. A passing headless check does not certify
+the result on another terminal or physical display.

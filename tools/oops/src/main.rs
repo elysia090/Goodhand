@@ -1,3 +1,7 @@
+#[cfg(any(test, goodhand_embedded_playback))]
+mod archive_profile;
+#[cfg(any(test, goodhand_embedded_playback))]
+mod archived_scene;
 mod arm_scene;
 mod measurement;
 mod playback;
@@ -17,7 +21,7 @@ use std::process::ExitCode;
 
 const HELP: &str = "oops 0.0.1\n\
 \n\
-Play one 30-second procedural arm rotation on a 24 Hz timeline.\n\
+Play one 30-second arm rotation on a 24 Hz timeline.\n\
 Pilot target: a foreground Xfce/VTE-compatible Linux terminal,\n\
 with UTF-8, true color, and at least 92 columns by 45 rows.\n\
 Run from the normal shell screen. Press q or Ctrl-C to exit.\n\
@@ -118,6 +122,7 @@ fn main() -> ExitCode {
     match options.mode {
         Mode::Help => {
             print!("{HELP}");
+            println!("This build plays {}.", arm_scene::CONTENT_LABEL);
             ExitCode::SUCCESS
         }
         Mode::Version => {

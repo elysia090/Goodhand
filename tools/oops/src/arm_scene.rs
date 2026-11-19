@@ -1,13 +1,31 @@
-//! Terminal projection/encoding only. The Goodhand sampler owns geometry,
-//! view orientation and base tone. This program never activates attributes.
+//! Terminal projection and encoding, independent of which scene supplies the dots.
+#[cfg(goodhand_embedded_playback)]
+use crate::archived_scene::{Archive, View};
+#[cfg(not(goodhand_embedded_playback))]
 use crate::playback::TICKS;
 use crate::settings::{CellAspect, MAX_ASPECT, MIN_ASPECT, Settings, Zoom};
+#[cfg(not(goodhand_embedded_playback))]
 use goodhand::ArmSampler;
+#[cfg(goodhand_embedded_playback)]
+use goodhand::RasterSpec;
 use std::io::{self, Write as _};
 use std::time::{Duration, Instant};
 
 pub const MIN_WIDTH: u16 = 92;
 pub const MIN_HEIGHT: u16 = 45;
+#[cfg(goodhand_embedded_playback)]
+pub const CONTENT_LABEL: &str = crate::archived_scene::LABEL;
+#[cfg(not(goodhand_embedded_playback))]
+pub const CONTENT_LABEL: &str = "procedural arm";
+
+#[cfg(goodhand_embedded_playback)]
+const FRAME_SIZE: (f64, f64) = (
+    RasterSpec::REFERENCE.width as f64,
+    RasterSpec::REFERENCE.height as f64,
+);
+#[cfg(not(goodhand_embedded_playback))]
+const FRAME_SIZE: (f64, f64) = (ArmSampler::FRAME_WIDTH, ArmSampler::FRAME_HEIGHT);
+
 const MAX_COLS: u16 = 220;
 const MAX_ROWS: u16 = 80;
 // Cancel any partial escape sequence, restore our black canvas, then redraw
@@ -84,7 +102,7 @@ impl Layout {
 
         let available_cols = (cols - 1).min(MAX_COLS);
         let available_rows = (rows - 3).min(MAX_ROWS);
-        let ratio = ArmSampler::FRAME_WIDTH / (ArmSampler::FRAME_HEIGHT * aspect);
+        let ratio = FRAME_SIZE.0 / (FRAME_SIZE.1 * aspect);
         let picture_cols = available_cols.min((f64::from(available_rows) * ratio).floor() as u16);
         let picture_rows = available_rows.min((f64::from(available_cols) / ratio).floor() as u16);
         Self {
@@ -99,18 +117,20 @@ impl Layout {
         }
     }
 
+    #[cfg(any(test, not(goodhand_embedded_playback)))]
     fn step(self) -> (f64, f64) {
         // Start from a uniform physical fit, then apply one scale to both axes.
         // The integer cell window is independent of zoom and still bounds work.
-        let dy = (ArmSampler::FRAME_HEIGHT / f64::from(self.rows))
-            .max(ArmSampler::FRAME_WIDTH / (self.aspect * f64::from(self.cols)))
+        let dy = (FRAME_SIZE.1 / f64::from(self.rows))
+            .max(FRAME_SIZE.0 / (self.aspect * f64::from(self.cols)))
             / self.zoom.factor();
         (dy * self.aspect, dy)
     }
 }
 
-#[derive(Default)]
 pub struct Painter {
+    #[cfg(goodhand_embedded_playback)]
+    archive: Archive,
     old: Vec<Option<u8>>,
     new: Vec<Option<u8>>,
     old_layout: Option<Layout>,
@@ -118,6 +138,17 @@ pub struct Painter {
 }
 
 impl Painter {
+    pub fn new() -> io::Result<Self> {
+        Ok(Self {
+            #[cfg(goodhand_embedded_playback)]
+            archive: Archive::embedded()?,
+            old: Vec::new(),
+            new: Vec::new(),
+            old_layout: None,
+            needs_resync: false,
+        })
+    }
+
     pub fn paint(
         &mut self,
         tick: u64,
@@ -127,20 +158,34 @@ impl Painter {
         let len = usize::from(layout.cols) * usize::from(layout.rows);
         self.new.resize(len, None);
         let trace_start = Instant::now();
-        let angle = -360.0 * tick as f64 / TICKS as f64;
-        let sampler = ArmSampler::new(angle).map_err(io::Error::other)?;
-        let (dx, dy) = layout.step();
-        let center_x = (f64::from(layout.cols) - 1.0) / 2.0;
-        let center_y = (f64::from(layout.rows) - 1.0) / 2.0;
-        for (row, pixels) in self
-            .new
-            .chunks_exact_mut(usize::from(layout.cols))
-            .enumerate()
+        #[cfg(goodhand_embedded_playback)]
+        self.archive.project(
+            tick,
+            View {
+                cols: usize::from(layout.cols),
+                rows: usize::from(layout.rows),
+                aspect: layout.aspect,
+                zoom: layout.zoom.factor(),
+            },
+            &mut self.new,
+        )?;
+        #[cfg(not(goodhand_embedded_playback))]
         {
-            let y = (center_y - row as f64) * dy;
-            for (col, pixel) in pixels.iter_mut().enumerate() {
-                let x = (col as f64 - center_x) * dx;
-                *pixel = sampler.sample(x, y);
+            let angle = -360.0 * tick as f64 / TICKS as f64;
+            let sampler = ArmSampler::new(angle).map_err(io::Error::other)?;
+            let (dx, dy) = layout.step();
+            let center_x = (f64::from(layout.cols) - 1.0) / 2.0;
+            let center_y = (f64::from(layout.rows) - 1.0) / 2.0;
+            for (row, pixels) in self
+                .new
+                .chunks_exact_mut(usize::from(layout.cols))
+                .enumerate()
+            {
+                let y = (center_y - row as f64) * dy;
+                for (col, pixel) in pixels.iter_mut().enumerate() {
+                    let x = (col as f64 - center_x) * dx;
+                    *pixel = sampler.sample(x, y);
+                }
             }
         }
         let trace_time = trace_start.elapsed();
@@ -155,7 +200,7 @@ impl Painter {
             }
             cup(packet, layout.top - 1, layout.left);
             gray(packet, 160);
-            packet.extend_from_slice(b"oops / procedural arm");
+            write!(packet, "oops / {CONTENT_LABEL}").expect("Vec writes cannot fail");
         }
 
         let mut active = None;
@@ -236,7 +281,12 @@ mod tests {
             pixels: (0, 0),
         };
         let fallback = Layout::fit(d, Settings::default());
-        assert_eq!((fallback.cols, fallback.rows), (164, 49));
+        let expected = if cfg!(goodhand_embedded_playback) {
+            (162, 52)
+        } else {
+            (164, 49)
+        };
+        assert_eq!((fallback.cols, fallback.rows), expected);
         assert_eq!(fallback.pitch, PitchSource::Assumed);
         let measured = Layout::fit(
             Display {
@@ -286,8 +336,8 @@ mod tests {
                 assert!(fit.cols <= MAX_COLS && fit.rows <= MAX_ROWS);
                 assert_eq!(fit.pitch, PitchSource::Configured);
                 let (fit_x, fit_y) = fit.step();
-                assert!(fit_x * f64::from(fit.cols) >= ArmSampler::FRAME_WIDTH - 1e-12);
-                assert!(fit_y * f64::from(fit.rows) >= ArmSampler::FRAME_HEIGHT - 1e-12);
+                assert!(fit_x * f64::from(fit.cols) >= FRAME_SIZE.0 - 1e-12);
+                assert!(fit_y * f64::from(fit.rows) >= FRAME_SIZE.1 - 1e-12);
                 for zoom in ["50", "99", "100", "101", "200"] {
                     let zoom: Zoom = zoom.parse().unwrap();
                     let layout = Layout::fit(
@@ -326,7 +376,7 @@ mod tests {
             zoom: "125".parse().unwrap(),
             cell_aspect: CellAspect::Fixed(0.5),
         };
-        let mut painter = Painter::default();
+        let mut painter = Painter::new().unwrap();
         let mut packet = Vec::new();
         let first = Layout::fit(before, settings);
         let second = Layout::fit(after, settings);
@@ -354,7 +404,7 @@ mod tests {
             size: Size { cols: 92, rows: 45 },
             pixels: (0, 0),
         };
-        let mut current = Painter::default();
+        let mut current = Painter::new().unwrap();
         let mut packet = Vec::new();
         let layout = Layout::fit(d, Settings::default());
         current.paint(0, layout, &mut packet).unwrap();
@@ -367,7 +417,10 @@ mod tests {
         assert!(packet.starts_with(RESYNC));
 
         let mut fresh = Vec::new();
-        Painter::default().paint(112, layout, &mut fresh).unwrap();
+        Painter::new()
+            .unwrap()
+            .paint(112, layout, &mut fresh)
+            .unwrap();
         current.paint(112, layout, &mut packet).unwrap();
         assert_eq!(packet.strip_prefix(RESYNC), Some(fresh.as_slice()));
         current.submitted(layout);
@@ -376,12 +429,12 @@ mod tests {
     }
 
     #[test]
-    fn geometry_changes_without_assets_at_both_angles() {
+    fn playback_updates_the_picture_at_different_ticks() {
         let d = Display {
             size: Size { cols: 92, rows: 45 },
             pixels: (0, 0),
         };
-        let mut p = Painter::default();
+        let mut p = Painter::new().unwrap();
         let mut first = Vec::new();
         let layout = Layout::fit(d, Settings::default());
         p.paint(0, layout, &mut first).unwrap();

@@ -1,4 +1,7 @@
-# Recover a reviewed fixed-grid snapshot
+# Developer evidence: recover a reviewed fixed-grid snapshot
+
+This is an offline provenance and validation workflow, not a playback package.
+The supported terminal playback entry point is the packaged [oops executable](../tools/oops/README.md).
 
 Use this when the reviewed **lossless** MP4 is already available to you.
 It recovers its exact 8-bit gray values without a pose guide. It does not

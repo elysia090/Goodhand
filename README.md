@@ -8,10 +8,10 @@ for comparison. The [source study](reference/source-study/) preserves the
 earlier authored gray and the independent occupancy shared by both snapshots.
 They are offline references, not runtime inputs. Source imagery is not included.
 
-The terminal pilot renders the generative model, not the offline reference
-files. See [design and quality gates](DESIGN.md) and the
-[tone input contract](docs/tone.md). The pilot is not a release or final
-artistic acceptance.
+The packaged player reads its embedded fixed-grid review. The source-only
+developer build instead renders the generative model. Neither reads the
+offline reference files at runtime. See [design and quality gates](DESIGN.md)
+and the [tone input contract](docs/tone.md).
 
 ## Library
 
@@ -43,23 +43,14 @@ to caller-owned buffers, with no frame data or video input. The new
 model is an approximation of the visual baseline, not a reconstruction
 of its underlying geometry. See the [base and attr design](docs/generative-base.md).
 
-## Terminal pilot
+## Terminal playback
 
-From the repository root on GNU/Linux x86-64:
-
-```sh
-cargo build --offline --release --locked --manifest-path tools/oops/Cargo.toml
-./tools/oops/target/release/oops --check
-./tools/oops/target/release/oops
-```
-
-In the tested foreground Xfce Terminal profile, the binary runs one 30-second
-rotation and returns to the shell. Press q or Ctrl-C to stop early. It needs
-a terminal of at least 92 columns × 45 rows, UTF-8, and true color. It
-keeps the drawing centered on resize, and supports optional projection
-zoom and cell-aspect calibration via flags or an explicit config file.
-There is no runtime Python, video, or artwork input. See the
-[terminal pilot guide](tools/oops/README.md) for setup, constraints, and timing.
+Run the packaged `oops` executable from a foreground Xfce-compatible
+GNU/Linux x86-64 terminal. `./oops --check` checks the resolved framing.
+`./oops` plays the embedded review on a 30-second timeline; q or Ctrl-C
+stops it early. No media files, config or developer tools are needed to run
+it. See the [terminal guide](tools/oops/README.md) for sizing, optional
+display settings and the developer build that embeds verified content.
 
 ## Checks
 
