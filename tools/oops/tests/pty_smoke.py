@@ -406,8 +406,47 @@ def test_playback_controls(binary):
     print("PASS playback direction/duration opening parity, gray gain, and artwork-only offset")
 
 
+def test_default_loop(binary, *, stall=False):
+    command = [binary, "--measure", "--duration", "12"]
+    complete_tick = re.compile(rb" / tick (\d{3,4})\x1b\[65;1H")
+    with Session(command, cols=121, rows=65) as s:
+        s.until(b" / tick 000")
+        def recent_ticks(raw):
+            return (int(n) for n in complete_tick.findall(raw[-12000:]))
+        s.until(lambda raw: any(n >= 282 for n in recent_ticks(raw)), timeout=14)
+        if stall:
+            # Keep output unavailable across the boundary; once the tty
+            # accepts writes the player should show current, not queued, ticks.
+            termios.tcflow(s.slave, termios.TCOOFF)
+            try:
+                time.sleep(0.42)
+            finally:
+                termios.tcflow(s.slave, termios.TCOON)
+        s.until(lambda raw: any(8 <= n <= 32 for n in recent_ticks(raw)), timeout=2)
+        assert s.proc.poll() is None and LEAVE not in s.raw
+        os.write(s.master, b"q")
+        raw, err, elapsed = s.end(0, timeout=2)
+        assert_scope(raw)
+        ticks = [int(n) for n in complete_tick.findall(raw)]
+        joins = [i for i in range(1, len(ticks)) if ticks[i] < ticks[i - 1]]
+        assert len(joins) == 1, joins
+        join, = joins
+        assert ticks[:join] == sorted(set(ticks[:join]))
+        assert ticks[join:] == sorted(set(ticks[join:]))
+        if stall:
+            assert ticks[join - 1] >= 282 and 1 <= ticks[join] <= 24, ticks[join-3:join+3]
+        else:
+            assert ticks[join - 1] >= 285 and ticks[join] <= 2, ticks[join-3:join+3]
+        assert 11.9 <= elapsed < 14, elapsed
+        assert int(re.search(rb"written=(\d+) ", err)[1]) == len(ticks), err
+        assert int(re.search(rb"timing_samples=(\d+) ", err)[1]) <= 288, err
+        assert b"playback=loop" in err and b"restoration was incomplete" not in err
+    case = " with flow control" if stall else ""
+    print(f"PASS default loop{case}: tick {ticks[join - 1]:03} to {ticks[join]:03}; q restores")
+
+
 def test_custom_duration(binary):
-    with Session([binary, "--measure", "--duration", "12", "--direction", "forward"],
+    with Session([binary, "--measure", "--once", "--duration", "12", "--direction", "forward"],
                  cols=121, rows=65) as s:
         raw, err, elapsed = s.end(0, timeout=15)
         assert_scope(raw)
@@ -415,7 +454,7 @@ def test_custom_duration(binary):
         assert ticks == sorted(set(ticks)) and ticks[0] <= 3 and 284 <= ticks[-1] < 288
         assert b"12 seconds / q or Ctrl-C" in raw
         assert re.search(rb"written=\d+/288\b", err)
-        assert b"duration=12s direction=forward" in err
+        assert b"duration=12s direction=forward" in err and b"playback=once" in err
         assert 11.9 <= elapsed < 15, elapsed
     print(f"PASS 12-second forward completion: {elapsed:.6f} s, {len(ticks)}/288 ticks")
 
@@ -672,9 +711,11 @@ def tests(binary, *, full, strict):
         assert b"failed" not in err
     print("PASS interactive Bash returns after q and keyboard Ctrl-C with original stty")
 
+    test_default_loop(binary)
     if full:
+        test_default_loop(binary, stall=True)
         test_custom_duration(binary)
-        with Session([binary, "--measure"]) as s:
+        with Session([binary, "--measure", "--once"]) as s:
             raw, err, elapsed = s.end(0, timeout=34)
             assert_scope(raw)
             ticks = [int(n) for n in TICK.findall(raw)]
@@ -687,7 +728,7 @@ def tests(binary, *, full, strict):
                 assert ticks == list(range(720)), f"only {len(ticks)} distinct ticks"
         print(f"PASS natural completion: {elapsed:.6f} s, {len(ticks)}/720 ticks, {len(raw)} bytes")
         if not strict:
-            with Session([binary, "--measure"], cols=290, rows=97) as s:
+            with Session([binary, "--measure", "--once"], cols=290, rows=97) as s:
                 s.until(lambda raw: any(int(n) >= 710 for n in TICK.findall(raw[-9000:])),
                         timeout=32)
                 # Keep the tty congested across the absolute run deadline,
@@ -703,7 +744,8 @@ def tests(binary, *, full, strict):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=lambda value: str(Path(value).resolve()))
-    parser.add_argument("--full", action="store_true", help="also run all 30 seconds (allows missed ticks)")
+    parser.add_argument("--full", action="store_true",
+                        help="also test stalled loop and one-turn deadlines (allows missed ticks)")
     parser.add_argument("--strict", action="store_true", help="require every tick on a quiet host")
     args = parser.parse_args()
     tests(args.binary, full=args.full or args.strict, strict=args.strict)

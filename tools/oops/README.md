@@ -7,8 +7,9 @@ Xfce Terminal shell on GNU/Linux x86-64, run:
     ./oops
 
 The minimum terminal is 92 columns × 45 rows with UTF-8, a single-cell
-bullet and true color. Press q or Ctrl-C to stop early. The normal run
-stops on its own after 30 seconds by default. No config, video, guide, external
+bullet and true color. Playback loops by default, taking 30 seconds per
+turn. Press q or Ctrl-C to return to the shell, or run `./oops --once`
+to stop automatically at the end of the first turn. No config, video, guide, external
 artwork, Python, Rust installation or FFmpeg is required at runtime.
 The ELF uses the host's standard GNU/Linux loader and shared libraries.
 
@@ -27,6 +28,7 @@ font, frame submission, or screen refresh.
     oops --zoom 120 --cell-aspect 0.4667
     oops --duration 24 --direction forward --offset-x -10 --brightness 85
     oops --config oops.example.conf --measure
+    oops --once --duration 30
 
 - `--zoom PERCENT` accepts an integer from 50 through 200. At 100 the
   complete source canvas fits the drawable grid. Below 100 the
@@ -51,7 +53,7 @@ font, frame submission, or screen refresh.
   `--direction forward` uses the same opening pose and visits the other
   poses in reverse order, with the same hold schedule. It does not
   mirror the image. The last pose precedes the wrap; the opening pose
-  is not replayed at the end.
+  is played at the next turn's first tick without a pause or extra hold.
 - `--offset-x PERCENT` and `--offset-y PERCENT` shift the artwork from
   center by signed whole percentages, from -50 to 50, of the current
   drawing grid's width and height, respectively. Positive x moves right;
@@ -77,8 +79,11 @@ font, frame submission, or screen refresh.
 
 `--check` prints the compiled content, resolved settings, aspect source,
 and drawing grid without entering the alternate screen. `--measure`
-prints the playback settings and timing, including the grid, aspect,
-and zoom of the last fully submitted frame.
+prints the playback settings and timing after exit, including the grid,
+aspect, and zoom of the last fully submitted frame. Use `--once` with
+`--measure` to automatically report after a single turn. Loop counters
+cover the whole run; timing percentiles and maxima cover up to one
+turn's worth of the most recent successfully submitted frames.
 
 ### Playback and recovery
 
@@ -95,7 +100,10 @@ crossed their tick boundary. When a nonblocking write would block, the
 frame writer waits briefly for output readiness instead of imposing a
 fixed delay before every retry. If a frame exhausts its write budget, the
 player drops it and waits for output readiness without rendering a queue.
-The selected duration, q, resize checks and handled signals still apply.
+Loop joins stay on the original clock: no screen restart, reset delay,
+or queue of missed poses. A pending write that runs into a join is
+discarded if it has not completed. q, resize checks and handled signals
+still apply; `--once` also imposes a final deadline.
 If any prefix reached the terminal, the next current frame cancels an
 incomplete terminal sequence, clears the owned alternate screen and
 draws the full image rather than continuing the old diff. A usable

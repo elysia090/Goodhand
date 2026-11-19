@@ -4,7 +4,7 @@ use crate::arm_scene::{
     CONTENT_LABEL, Display, Layout, MIN_HEIGHT, MIN_WIDTH, Painter, PitchSource, Size,
 };
 use crate::measurement::{Measurement, Timings};
-use crate::playback;
+use crate::playback::{self, Repeat, Timeline};
 use crate::settings::Settings;
 use crate::terminal_keys::Termios;
 use std::cell::Cell;
@@ -340,7 +340,7 @@ impl Screen {
         &self,
         packet: &[u8],
         viewport: Display,
-        end: Instant,
+        end: Option<Instant>,
         frame_deadline: Instant,
     ) -> io::Result<FrameResult> {
         use playback::PacketError;
@@ -352,7 +352,7 @@ impl Screen {
                     return Err(FrameStop::Error(io::Error::other("playback stopped")));
                 }
                 let now = Instant::now();
-                if now >= end {
+                if end.is_some_and(|deadline| now >= deadline) {
                     return Err(FrameStop::EndOfRun);
                 }
                 if now >= frame_deadline {
@@ -431,12 +431,16 @@ fn check_live(tty: &Terminal, deadline: Instant) -> io::Result<()> {
 fn play(
     screen: &Screen,
     settings: Settings,
+    repeat: Repeat,
     stats: &mut Measurement,
     painter: &mut Painter,
 ) -> io::Result<()> {
     let start = Instant::now();
-    let cycle = settings.cycle;
-    let end = start + cycle.length();
+    let timeline = Timeline {
+        cycle: settings.cycle,
+        repeat,
+    };
+    let end = (repeat == Repeat::Once).then(|| start + timeline.cycle.length());
     let mut packet = Vec::with_capacity(64_000);
     let mut attempted = None;
     let mut awaiting_output = false;
@@ -444,9 +448,12 @@ fn play(
         if screen.stopping()? {
             return Ok(());
         }
-        let Some(tick) = cycle.tick(start.elapsed()) else {
+        let now = Instant::now();
+        let Some(slot) = timeline.sample(now.duration_since(start)) else {
             return Ok(());
         };
+        let next = now + slot.until_next_tick;
+        let join = now + slot.until_join;
         let observed = screen.terminal.display()?;
         if !observed.size.fits() {
             return Err(io::Error::other(size_error(observed.size)));
@@ -458,31 +465,40 @@ fn play(
             awaiting_output = !screen.terminal.wait_writable()?;
             continue;
         }
-        let next = start + cycle.start_of_tick(tick + 1);
-        if attempted != Some(tick) {
-            attempted = Some(tick);
+        if attempted != Some(slot.phase) {
+            attempted = Some(slot.phase);
             let begin_paint = Instant::now();
             let layout = Layout::fit(observed, settings);
-            let trace = painter.paint(tick, layout, &mut packet)?;
+            let trace = painter.paint(slot.phase.tick, layout, &mut packet)?;
             let encode = begin_paint.elapsed().saturating_sub(trace);
-            stats.traces += 1;
-            // Skip obsolete work, never play a delayed queue.
-            if cycle.tick(start.elapsed()) != Some(tick) {
-                stats.stale += 1;
+            stats.record_trace();
+            // Compare both turn and tick so even a pause of a whole turn
+            // cannot submit or suppress a packet at the same local tick.
+            if timeline
+                .sample(start.elapsed())
+                .map(|current| current.phase)
+                != Some(slot.phase)
+            {
+                stats.record_stale();
                 continue;
             }
             let begin_write = Instant::now();
-            match screen.frame(&packet, observed, end, begin_write + FRAME_BUDGET)? {
+            // A partial packet that reaches a loop join is handled just
+            // like a stalled submission: wait for readiness and resync.
+            let deadline = (begin_write + FRAME_BUDGET).min(join);
+            match screen.frame(&packet, observed, end, deadline)? {
                 FrameResult::Submitted => {
                     let write = begin_write.elapsed();
-                    stats.bytes += packet.len();
-                    stats.layout = Some(layout);
-                    stats.late_write += usize::from(Instant::now() >= next);
-                    stats.record(Timings {
-                        trace,
-                        encode,
-                        write,
-                    });
+                    stats.record_frame(
+                        layout,
+                        packet.len(),
+                        Instant::now() >= next,
+                        Timings {
+                            trace,
+                            encode,
+                            write,
+                        },
+                    );
                     painter.submitted(layout);
                 }
                 FrameResult::EndOfRun => return Ok(()),
@@ -490,9 +506,8 @@ fn play(
                     wait_for_output,
                     partial,
                 } => {
-                    stats.dropped_write += 1;
+                    stats.record_drop(partial);
                     if partial {
-                        stats.partial_write += 1;
                         painter.interrupted_submission();
                     }
                     awaiting_output = wait_for_output;
@@ -537,7 +552,7 @@ fn report_runtime(message: &str) {
     });
 }
 
-pub fn run(check_only: bool, measure: bool, settings: Settings) -> u8 {
+pub fn run(check_only: bool, measure: bool, settings: Settings, repeat: Repeat) -> u8 {
     let (terminal, display) = match preflight() {
         Ok(result) => result,
         Err(reason) => {
@@ -548,7 +563,7 @@ pub fn run(check_only: bool, measure: bool, settings: Settings) -> u8 {
     if check_only {
         let layout = Layout::fit(display, settings);
         println!(
-            "oops: {} columns by {} rows; model grid {} by {}, cell aspect {:.4} ({}), zoom {}%; content: {CONTENT_LABEL}; {}",
+            "oops: {} columns by {} rows; model grid {} by {}, cell aspect {:.4} ({}), zoom {}%; content: {CONTENT_LABEL}; {} playback={repeat}",
             display.size.cols,
             display.size.rows,
             layout.cols,
@@ -580,11 +595,11 @@ pub fn run(check_only: bool, measure: bool, settings: Settings) -> u8 {
         original_keys: None,
         quit_pressed: Cell::new(false),
     };
-    let mut stats = Measurement::new(measure, settings);
+    let mut stats = Measurement::new(measure, settings, repeat);
     let playback = screen
         .enter()
         .and_then(|()| screen.enable_keys())
-        .and_then(|()| play(&screen, settings, &mut stats, &mut painter));
+        .and_then(|()| play(&screen, settings, repeat, &mut stats, &mut painter));
     let cleanup = screen.restore();
     if let Some(report) = stats.report() {
         report_runtime(&report);

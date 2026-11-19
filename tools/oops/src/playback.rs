@@ -97,6 +97,60 @@ impl Cycle {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Repeat {
+    #[default]
+    Loop,
+    Once,
+}
+
+impl fmt::Display for Repeat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Loop => "loop",
+            Self::Once => "once",
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Phase {
+    pub turn: u64,
+    pub tick: u64,
+}
+
+#[derive(Clone, Copy)]
+pub struct Slot {
+    pub phase: Phase,
+    pub until_next_tick: Duration,
+    pub until_join: Duration,
+}
+
+#[derive(Clone, Copy)]
+pub struct Timeline {
+    pub cycle: Cycle,
+    pub repeat: Repeat,
+}
+
+impl Timeline {
+    pub fn sample(self, elapsed: Duration) -> Option<Slot> {
+        // Reduce whole seconds first: no accumulated tick count, converted
+        // absolute nanoseconds, or repeated addition of cycle boundaries.
+        let seconds = self.cycle.length().as_secs();
+        let turn = elapsed.as_secs() / seconds;
+        if self.repeat == Repeat::Once && turn != 0 {
+            return None;
+        }
+        let within = Duration::new(elapsed.as_secs() % seconds, elapsed.subsec_nanos());
+        let tick = self.cycle.tick(within)?;
+        Some(Slot {
+            phase: Phase { turn, tick },
+            until_next_tick: self.cycle.start_of_tick(tick + 1) - within,
+            until_join: self.cycle.length() - within,
+        })
+    }
+}
+
 /// Only one packet is ever in flight. Check both cancellation and wall-clock
 /// budget before every write or retry. Interrupted writes are replayed only
 /// when the OS reports that zero bytes were written.
@@ -197,6 +251,53 @@ mod tests {
         }
         assert_eq!(forward.yaw(0), 0.0);
         assert!(forward.yaw(719) < 360.0);
+    }
+
+    #[test]
+    fn timeline_wrap_is_continuous_and_uses_the_same_holds_each_turn() {
+        let cycle = Cycle::default();
+        let looping = Timeline {
+            cycle,
+            repeat: Repeat::Loop,
+        };
+        let once = Timeline {
+            cycle,
+            repeat: Repeat::Once,
+        };
+        for turn in [0, 1, 100_000_000] {
+            let base = cycle.length() * turn;
+            for tick in 0..cycle.ticks() {
+                let slot = looping.sample(base + cycle.start_of_tick(tick)).unwrap();
+                assert_eq!(
+                    slot.phase,
+                    Phase {
+                        turn: u64::from(turn),
+                        tick
+                    }
+                );
+                assert_eq!(
+                    slot.until_next_tick,
+                    cycle.start_of_tick(tick + 1) - cycle.start_of_tick(tick)
+                );
+            }
+            let last = looping
+                .sample(base + cycle.length() - Duration::from_nanos(1))
+                .unwrap();
+            assert_eq!(last.phase.tick, 719);
+            assert_eq!(last.until_next_tick, Duration::from_nanos(1));
+            assert_eq!(last.until_join, Duration::from_nanos(1));
+        }
+        assert!(
+            once.sample(cycle.length() - Duration::from_nanos(1))
+                .is_some()
+        );
+        assert!(once.sample(cycle.length()).is_none());
+        let next = looping.sample(cycle.length()).unwrap();
+        assert_eq!(next.phase, Phase { turn: 1, tick: 0 });
+        assert_eq!(next.until_join, cycle.length());
+        let far = looping.sample(Duration::MAX).unwrap();
+        assert!(far.phase.tick < cycle.ticks());
+        assert!(far.until_next_tick <= far.until_join);
     }
 
     #[derive(Default)]

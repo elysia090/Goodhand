@@ -13,6 +13,7 @@ mod terminal;
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
 mod terminal_keys;
 
+use playback::Repeat;
 use settings::{Key, Overrides};
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
 use settings::{Settings, read_config};
@@ -22,7 +23,7 @@ use std::process::ExitCode;
 
 const HELP: &str = "oops 0.0.1\n\
 \n\
-Play one arm rotation on a 24 Hz timeline (30 seconds by default).\n\
+Loop an arm rotation on a 24 Hz timeline (30 seconds per turn by default).\n\
 Pilot target: a foreground Xfce/VTE-compatible Linux terminal,\n\
 with UTF-8, true color, and at least 92 columns by 45 rows.\n\
 Run from the normal shell screen. Press q or Ctrl-C to exit.\n\
@@ -32,6 +33,7 @@ Usage: oops [--check | --measure] [--config PATH] [OPTIONS]\n\
 \n\
   --check               Check terminal preconditions and display geometry.\n\
   --measure             Play and print process timing after restoring the shell.\n\
+  --once                Stop after one turn instead of looping.\n\
   --config PATH         Read optional display settings from this file only.\n\
   --zoom PERCENT        50–200; 100 fits the model frame, above 100 may crop.\n\
   --cell-aspect ASPECT  auto (default) or cell width/height from 0.30 to 0.85.\n\
@@ -58,6 +60,7 @@ enum Mode {
 #[derive(Debug, Default, PartialEq)]
 struct Options {
     mode: Mode,
+    repeat: Repeat,
     config: Option<PathBuf>,
     overrides: Overrides,
 }
@@ -76,6 +79,13 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Options, Strin
             Some("--measure") => Mode::Measure,
             Some("--help" | "-h") => Mode::Help,
             Some("--version" | "-V") => Mode::Version,
+            Some("--once") => {
+                if options.repeat == Repeat::Once {
+                    return Err("--once: specified more than once".into());
+                }
+                options.repeat = Repeat::Once;
+                continue;
+            }
             Some("--config") => {
                 if options.config.is_some() {
                     return Err("--config: specified more than once".into());
@@ -106,7 +116,9 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Options, Strin
         options.mode = mode;
     }
     if matches!(options.mode, Mode::Help | Mode::Version)
-        && (options.config.is_some() || options.overrides != Overrides::default())
+        && (options.repeat == Repeat::Once
+            || options.config.is_some()
+            || options.overrides != Overrides::default())
     {
         return Err("--help and --version must be used on their own".into());
     }
@@ -148,9 +160,11 @@ fn error_exit(reason: &str) -> ExitCode {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
 fn run(options: Options) -> ExitCode {
-    let mode = options.mode;
+    let Options { mode, repeat, .. } = options;
     match options.settings() {
-        Ok(settings) => terminal::run(mode == Mode::Check, mode == Mode::Measure, settings).into(),
+        Ok(settings) => {
+            terminal::run(mode == Mode::Check, mode == Mode::Measure, settings, repeat).into()
+        }
         Err(reason) => error_exit(&reason),
     }
 }
@@ -171,6 +185,8 @@ mod tests {
     #[test]
     fn modes_and_display_flags_accept_either_order() {
         assert_eq!(args(&[]).unwrap().mode, Mode::Play);
+        assert_eq!(args(&[]).unwrap().repeat, Repeat::Loop);
+        assert_eq!(args(&["--measure", "--once"]).unwrap().repeat, Repeat::Once);
         assert_eq!(args(&["--check"]).unwrap().mode, Mode::Check);
         assert_eq!(args(&["--help"]).unwrap().mode, Mode::Help);
         assert_eq!(args(&["-V"]).unwrap().mode, Mode::Version);
@@ -184,6 +200,8 @@ mod tests {
     fn ambiguous_or_invalid_flags_fail() {
         for args in [
             &["--help", "--check"][..],
+            &["--help", "--once"],
+            &["--once", "--once"],
             &["--duration=10"],
             &["--duration", "11"],
             &["--duration", "61"],
