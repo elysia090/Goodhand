@@ -93,6 +93,39 @@ impl Archive {
         self.framing.size
     }
 
+    #[cfg(all(
+        feature = "desktop-window",
+        target_os = "linux",
+        goodhand_embedded_playback
+    ))]
+    pub(crate) fn frame(
+        &self,
+        pose: u32,
+    ) -> io::Result<(goodhand::ShapeFrame<'static>, &'static [u8])> {
+        self.shape
+            .frame(pose)
+            .zip(self.tone.frame(pose))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "reference pose outside archive",
+                )
+            })
+    }
+
+    #[cfg(all(feature = "desktop-window", target_os = "linux", goodhand_w5_profile))]
+    pub(crate) fn grid_lattice(&self) -> ([f64; 2], [f64; 2], &[usize], &[usize]) {
+        let center = [self.framing.center.0, self.framing.center.1];
+        let size = [self.framing.size.0, self.framing.size.1];
+        let spec = RasterSpec::REFERENCE;
+        (
+            std::array::from_fn(|i| (center[i] - tile_origin(spec, i)) / spec.pitch[i] as f64),
+            std::array::from_fn(|i| size[i] / spec.pitch[i] as f64),
+            self.tiles.cols.as_slice(),
+            self.tiles.rows.as_slice(),
+        )
+    }
+
     fn select(&mut self, index: u32) -> io::Result<()> {
         if self.last_pose == Some(index) {
             return Ok(());
@@ -129,14 +162,23 @@ impl Archive {
         view: Projection,
         output: &mut [Option<u8>],
     ) -> io::Result<()> {
+        let index =
+            pose_at_tick(cycle, tick).ok_or_else(|| io::Error::other("invalid playback tick"))?;
+        self.project_pose(index, view, output)
+    }
+
+    pub(crate) fn project_pose(
+        &mut self,
+        index: u32,
+        view: Projection,
+        output: &mut [Option<u8>],
+    ) -> io::Result<()> {
         if view.cols * view.rows != output.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "archive viewport does not match output length",
             ));
         }
-        let index =
-            pose_at_tick(cycle, tick).ok_or_else(|| io::Error::other("invalid playback tick"))?;
         self.select(index)?;
         self.tiles.update(view, self.framing);
         let width = usize::from(WIDTH);

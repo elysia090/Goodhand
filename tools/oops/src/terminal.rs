@@ -1,4 +1,4 @@
-//! Linux x86-64 terminal boundary for inline and Island playback in a normal foreground VTE shell.
+//! Linux x86-64 terminal boundary for inline and alternate-buffer playback in a normal foreground VTE shell.
 use crate::arm_scene::{
     CONTENT_LABEL, Display, InlineRows, Layout, MIN_HEIGHT, MIN_WIDTH, Painter, PitchSource, Size,
     clear_rows, cup, reservation,
@@ -355,7 +355,7 @@ impl Write for TrackEntry<'_> {
 }
 
 impl Screen {
-    fn enter_island(&mut self) -> io::Result<()> {
+    fn enter_alternate_buffer(&mut self) -> io::Result<()> {
         let deadline = Instant::now() + CONTROL_BUDGET;
         let writer = TrackEntry {
             output: &self.terminal.0,
@@ -715,7 +715,9 @@ impl Screen {
             self.terminal.foreground()?;
             original.apply(self.terminal.fd())
         });
-        let screen = self.leave_inline().and_then(|()| self.leave_island());
+        let screen = self
+            .leave_inline()
+            .and_then(|()| self.leave_alternate_buffer());
         // The cursor is independent of row ownership, even after a resize
         // interrupted cleanup. Never force a formerly hidden cursor visible.
         let cursor = if std::mem::take(&mut self.cursor_visibility_saved) {
@@ -772,7 +774,7 @@ impl Screen {
         self.cleanup_write(&packet, None)
     }
 
-    fn leave_island(&mut self) -> io::Result<()> {
+    fn leave_alternate_buffer(&mut self) -> io::Result<()> {
         if !std::mem::take(&mut self.entered) {
             return Ok(());
         }
@@ -945,7 +947,7 @@ pub fn run(
     measure: bool,
     settings: Settings,
     repeat: Repeat,
-    island: bool,
+    alternate_buffer: bool,
 ) -> u8 {
     let (terminal, display) = match preflight() {
         Ok(result) => result,
@@ -962,7 +964,7 @@ pub fn run(
         }
     };
     if check_only {
-        let layout = if island {
+        let layout = if alternate_buffer {
             Layout::for_surface(display, settings, painter.frame_size(), None)
         } else {
             // Preflight remains read-only: this is the planned inline
@@ -986,7 +988,11 @@ pub fn run(
             },
             settings.zoom.percent(),
             settings.playback_status(),
-            if island { "island" } else { "inline" },
+            if alternate_buffer {
+                "alternate-buffer"
+            } else {
+                "inline"
+            },
             painter.frame_size().0,
             painter.frame_size().1,
         );
@@ -1017,8 +1023,8 @@ pub fn run(
     let playback = screen
         .enable_keys()
         .and_then(|()| {
-            if island {
-                screen.enter_island()
+            if alternate_buffer {
+                screen.enter_alternate_buffer()
             } else {
                 screen.enter_inline(display)
             }

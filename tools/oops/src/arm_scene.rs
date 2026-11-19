@@ -1,7 +1,7 @@
 //! Terminal projection and encoding, independent of which scene supplies the dots.
 #[cfg(any(test, goodhand_w5_profile))]
 #[path = "w5_tones.rs"]
-mod w5_tones;
+pub(crate) mod w5_tones;
 #[cfg(goodhand_embedded_playback)]
 use crate::archived_scene::{Archive, pose_at_tick};
 use crate::dots::DotCell;

@@ -4,11 +4,14 @@ version = "0.0.1"
 edition = "2024"
 publish = false
 rust-version = "1.85"
-description = "A synthetic terminal playback pilot"
+description = "A rotating arm playback pilot"
 
 [profile.release]
 lto = true
 strip = true
+
+[features]
+desktop-window = []
 
 [dependencies]
 goodhand = { path = "../.." }

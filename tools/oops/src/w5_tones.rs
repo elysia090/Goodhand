@@ -3,6 +3,9 @@ use super::{Layout, Size};
 use crate::dots::{DotCell, Renderer};
 use crate::settings::Settings;
 
+pub(crate) const REFERENCE_COLS: usize = 115;
+pub(crate) const REFERENCE_ROWS: usize = 27;
+
 pub(super) fn supports(layout: Layout) -> bool {
     let default = Settings::default();
     layout.display.size
@@ -10,7 +13,8 @@ pub(super) fn supports(layout: Layout) -> bool {
             cols: 116,
             rows: 41,
         })
-        && (layout.cols, layout.rows, layout.aspect) == (115, 27, 0.5)
+        && (layout.cols, layout.rows, layout.aspect)
+            == (REFERENCE_COLS as u16, REFERENCE_ROWS as u16, 0.5)
         && layout.settings.zoom == default.zoom
         && layout.settings.offset == default.offset
         && layout.settings.brightness == default.brightness
@@ -22,13 +26,17 @@ pub(super) fn apply(layout: Layout, pose: u32, cells: &mut [Option<DotCell>]) {
     if !supports(layout) {
         return;
     }
+    apply_reference(pose, cells);
+}
+
+pub(crate) fn apply_reference(pose: u32, cells: &mut [Option<DotCell>]) {
     let Some(view) = pose.checked_sub(START).and_then(|n| VIEWS.get(n as usize)) else {
         return;
     };
     remap(
         cells,
-        usize::from(layout.cols),
-        usize::from(layout.rows),
+        REFERENCE_COLS,
+        REFERENCE_ROWS,
         CENTER,
         *view,
         LIMITS,

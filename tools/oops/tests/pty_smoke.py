@@ -273,7 +273,7 @@ def model_grid(frame, cols, rows, aspect=0.5, *, inline=False):
 
 def test_config(binary, frame):
     def check(args, expected, pixels=(0, 0), env=None):
-        with Session([binary, "--check", "--island", *args], cols=165, rows=55,
+        with Session([binary, "--check", "--alternate-buffer", *args], cols=165, rows=55,
                      pixels=pixels, env=env) as s:
             out, err, _ = s.end(0)
             assert not err and expected in out, (out, err)
@@ -348,7 +348,7 @@ def test_config(binary, frame):
             else:
                 config.unlink()
             # A CLI override does not conceal a malformed config file.
-            with Session([binary, "--config", config, "--zoom", "100", "--dots"]) as s:
+            with Session([binary, "--terminal", "--config", config, "--zoom", "100", "--dots"]) as s:
                 out, err, _ = s.end(2)
                 assert not out and b"display settings.conf" in err
                 assert expected in err and b"\x1b" not in err, err
@@ -363,7 +363,7 @@ def test_config(binary, frame):
         symlink.unlink()
         symlink.symlink_to(fifo)
         for path in (fifo, symlink, directory):
-            with Session([binary, "--config", path]) as s:
+            with Session([binary, "--terminal", "--config", path]) as s:
                 out, err, _ = s.end(2, timeout=1)
                 assert not out and b"expected a regular file" in err, err
     print("PASS config example, per-setting CLI precedence, pitch source, and startup failures")
@@ -371,7 +371,7 @@ def test_config(binary, frame):
 
 def test_zoom_resize(binary, framing):
     for zoom in (50, 200):
-        with Session([binary, "--island", "--measure", "--zoom", str(zoom)], cols=165, rows=55,
+        with Session([binary, "--alternate-buffer", "--measure", "--zoom", str(zoom)], cols=165, rows=55,
                      pixels=(1155, 825)) as s:
             bottom = b"\x1b[55;1H"
             clear = b"\x1b[2J"
@@ -407,7 +407,7 @@ def test_zoom_resize(binary, framing):
 def opening_cells(binary, options):
     """Decode occupied cells in one complete wire frame, not its appearance."""
     marker = b"\x1b[65;1H"
-    with Session([binary, "--island", "--zoom", "50", "--cell-aspect", "0.60", *options],
+    with Session([binary, "--terminal", "--alternate-buffer", "--zoom", "50", "--cell-aspect", "0.60", *options],
                  cols=121, rows=65) as s:
         s.until(marker)
         os.write(s.master, b"q")
@@ -456,15 +456,15 @@ def test_playback_controls(binary):
 
 
 def test_renderer(binary):
-    for island in (False, True):
-        surface = ["--island"] if island else []
+    for alternate in (False, True):
+        surface = ["--alternate-buffer"] if alternate else []
         for dots in (False, True):
-            with Session([binary, *surface, *(["--dots"] if dots else [])],
+            with Session([binary, "--terminal", *surface, *(["--dots"] if dots else [])],
                          cols=116, rows=41) as s:
-                if not island:
+                if not alternate:
                     s.cursor_reply(1, 41)
                     s.cursor_reply(2, 41)
-                s.until(lambda raw: raw.count(s.bottom) >= (1 if island else 2))
+                s.until(lambda raw: raw.count(s.bottom) >= (1 if alternate else 2))
                 # Exercise both exit keys in both surfaces, including legacy.
                 os.write(s.master, b"\x03" if dots else b"q")
                 raw, err, _ = s.end(130 if dots else 0)
@@ -472,11 +472,11 @@ def test_renderer(binary):
                 assert_cursor_scope(raw)
                 assert bool(BRAILLE.search(raw)) == (not dots), "wrong Braille renderer"
                 assert (BULLET in raw) == dots, "wrong bullet renderer"
-                if island:
+                if alternate:
                     assert_scope(raw)
                 else:
                     assert raw.endswith(b"\x1b[11;1H" + CURSOR_RESTORE)
-    print("PASS default Braille and --dots in inline and Island; q and Ctrl-C restore")
+    print("PASS default Braille and --dots in inline and alternate screen; q and Ctrl-C restore")
 
 
 def timing_output(err):
@@ -525,7 +525,7 @@ def test_default_loop(binary, *, stall=False):
 
 
 def test_custom_duration(binary):
-    with Session([binary, "--island", "--measure", "--once", "--duration", "12", "--direction", "forward"],
+    with Session([binary, "--alternate-buffer", "--measure", "--once", "--duration", "12", "--direction", "forward"],
                  cols=121, rows=65) as s:
         raw, err, elapsed = s.end(0, timeout=15)
         assert_scope(raw)
@@ -540,7 +540,7 @@ def test_custom_duration(binary):
 def test_inline(binary):
     # Synthetic CPR positions model a normal foreground shell and a reflow
     # moving both cursor markers. A real VTE resize is verified separately.
-    with Session([binary], cols=165, rows=55) as s:
+    with Session([binary, "--terminal"], cols=165, rows=55) as s:
         s.cursor_reply(1, 55)
         s.cursor_reply(2, 55)
         s.until(BRAILLE.search)
@@ -564,14 +564,14 @@ def test_inline(binary):
                        for row in re.findall(rb"\x1b\[(\d+);\d+H", packet))
         for token in (ENTER, LEAVE, b"\x1b[2J", b"\x1b[3J", b"oops /", b" / tick "):
             assert token not in raw, token
-    with Session([binary], cols=165, rows=55) as s:
+    with Session([binary, "--terminal"], cols=165, rows=55) as s:
         s.cursor_reply(1, 55, 3)
         raw, err, _ = s.end(1)
         assert raw == CURSOR_QUERY and b"fresh line" in err
-    with Session([binary], cols=165, rows=55) as s:
+    with Session([binary, "--terminal"], cols=165, rows=55) as s:
         raw, err, _ = s.end(1, timeout=1)
         assert raw == CURSOR_QUERY and b"did not report its cursor position" in err
-    with Session([binary], cols=165, rows=55) as s:
+    with Session([binary, "--terminal"], cols=165, rows=55) as s:
         s.cursor_reply(1, 55)
         s.cursor_reply(2, 55)
         s.until(lambda raw: raw.count(s.bottom) >= 2)
@@ -587,7 +587,7 @@ def test_inline(binary):
 
 
 def test_width_follow(binary):
-    with Session([binary], cols=165, rows=55) as s:
+    with Session([binary, "--terminal"], cols=165, rows=55) as s:
         s.cursor_reply(1, 55)
         s.cursor_reply(2, 55)
         s.until(lambda raw: raw.count(s.bottom) >= 3)
@@ -625,7 +625,7 @@ def raw_position_safe(raw, *, bottom, top):
 
 
 def test_inline_row_tails(binary):
-    with Session([binary, "--duration", "12"], cols=116, rows=41) as s:
+    with Session([binary, "--terminal", "--duration", "12"], cols=116, rows=41) as s:
         s.cursor_reply(1, 41)
         s.cursor_reply(2, 41)
         # No full clear on startup. EL here means a live row got shorter.
@@ -648,7 +648,7 @@ def test_inline_shell(binary):
             pos = len(s.raw)
             os.write(s.master, (
                 "previous=$(stty -g); " + path
-                + "; code=$?; if [[ $(stty -g) = $previous ]]; then "
+                + " --terminal; code=$?; if [[ $(stty -g) = $previous ]]; then "
                 + "printf 'CHECK_%s_OK\\n' \"$code\"; fi\n"
             ).encode())
             s.cursor_reply(run * 2 + 1, 55)
@@ -673,11 +673,11 @@ def test_standard_sizes(binary, framing):
             raw, err, _ = s.end(0)
             assert f"model grid {grid_cols} by {grid_rows}".encode() in raw
             assert b"surface=inline" in raw and not err and b"\x1b" not in raw
-        for island in (False, True):
-            opts = ["--island"] if island else []
-            with Session([binary, *opts], cols=cols, rows=rows) as s:
+        for alternate in (False, True):
+            opts = ["--alternate-buffer"] if alternate else []
+            with Session([binary, "--terminal", *opts], cols=cols, rows=rows) as s:
                 top = 1
-                if not island:
+                if not alternate:
                     top = rows - min(rows * 3 // 4, 80)
                     s.cursor_reply(1, rows)
                     s.cursor_reply(2, rows)
@@ -685,7 +685,7 @@ def test_standard_sizes(binary, framing):
                 os.write(s.master, b"q")
                 raw, err, _ = s.end(0)
                 assert not err
-                if island:
+                if alternate:
                     assert_scope(raw)
                 else:
                     assert ENTER not in raw and b"\x1b[2J" not in raw
@@ -695,7 +695,7 @@ def test_standard_sizes(binary, framing):
                 assert positions and all(top <= int(y) <= rows and 1 <= int(x) <= cols
                                          for y, x in positions)
                 assert len(BRAILLE.findall(raw)) >= 20
-    print("PASS 80×24, 116×41, 120×30, and 132×43 draw bounded art in inline and Island modes")
+    print("PASS 80×24, 116×41, 120×30, and 132×43 draw bounded art in inline and alternate screen modes")
 
 
 def tests(binary, *, full, strict):
@@ -703,8 +703,9 @@ def tests(binary, *, full, strict):
         (["--help"], 0, b"Usage: oops"),
         (["--version"], 0, b"oops 0.0.1"),
         (["--bad-argument"], 2, b"unknown option"),
-        ([], 2, b"not a terminal"),
-        (["--island"], 2, b"not a terminal"),
+        (["--terminal"], 2, b"not a terminal"),
+        (["--terminal", "--alternate-buffer"], 2, b"not a terminal"),
+        (["--alternate-buffer"], 2, b"terminal display flags require"),
         (["--check"], 2, b"not a terminal"),
     ]:
         result = subprocess.run(
@@ -738,7 +739,7 @@ def tests(binary, *, full, strict):
     test_standard_sizes(binary, framing)
 
     for cols, rows in [(79, 24), (80, 23), (0, 0)]:
-        with Session([binary], cols=cols, rows=rows) as s:
+        with Session([binary, "--terminal"], cols=cols, rows=rows) as s:
             out, err, _ = s.end(2)
             assert not out and b"need at least" in err and b"\x1b" not in err
     for env, diagnostic in [
@@ -748,7 +749,7 @@ def tests(binary, *, full, strict):
         ({"TMUX": "fake,10,0"}, b"nested terminal"),
         ({"NO_COLOR": "1"}, b"NO_COLOR"),
     ]:
-        with Session([binary], env=env) as s:
+        with Session([binary, "--terminal"], env=env) as s:
             out, err, _ = s.end(2)
             assert not out and diagnostic in err and b"\x1b" not in err
     with Session([binary, "--check"], cols=80, rows=24) as s:
@@ -757,13 +758,13 @@ def tests(binary, *, full, strict):
         assert b"\x1b" not in out
     print("PASS exact minimum, one-column/row undersize, unknown size/profile and read-only preflight")
 
-    with Session(["bash", "-c", 'exec "$1" </dev/null', "_", binary]) as s:
+    with Session(["bash", "-c", 'exec "$1" --terminal </dev/null', "_", binary]) as s:
         out, err, _ = s.end(2)
         assert not out and b"stdin is not a terminal" in err and b"\x1b" not in err
     print("PASS redirected input does not touch the terminal")
 
     for cols, rows in [(80, 24), (365, 169)]:
-        with Session([binary, "--island"], cols=cols, rows=rows) as s:
+        with Session([binary, "--terminal", "--alternate-buffer"], cols=cols, rows=rows) as s:
             s.until(f"\x1b[{rows};1H".encode())
             os.write(s.master, b"q")
             raw, err, _ = s.end(0)
@@ -780,7 +781,7 @@ def tests(binary, *, full, strict):
         (signal.SIGQUIT, 131),
         (signal.SIGTSTP, 148),
     ]:
-        with Session([binary, "--island"]) as s:
+        with Session([binary, "--terminal", "--alternate-buffer"]) as s:
             s.until(s.bottom)
             s.keys_active()
             os.kill(s.proc.pid, sig)
@@ -789,7 +790,7 @@ def tests(binary, *, full, strict):
             assert not err and elapsed < 1
     print("PASS SIGINT/TERM/HUP/QUIT/TSTP exit, owned cleanup, inherited tty state preserved")
 
-    with Session([binary, "--island"]) as s:
+    with Session([binary, "--terminal", "--alternate-buffer"]) as s:
         s.until(s.bottom)
         s.keys_active()
         os.write(s.master, b"q")
@@ -798,7 +799,7 @@ def tests(binary, *, full, strict):
         assert not err and elapsed < 1
     print("PASS q exits without Enter and restores termios")
 
-    with Session([binary, "--island"]) as s:
+    with Session([binary, "--terminal", "--alternate-buffer"]) as s:
         s.until(b"\x1b[86;1H")
         s.geometry(200, 90)
         s.until(lambda raw: raw.count(b"\x1b[2J") >= 2)
@@ -808,7 +809,7 @@ def tests(binary, *, full, strict):
         assert b"need at least" in err and elapsed < 1
     print("PASS wider resize recenters and below-minimum resize exits with cleanup")
 
-    with Session([binary, "--island"]) as s:
+    with Session([binary, "--terminal", "--alternate-buffer"]) as s:
         s.until(ENTER)
         time.sleep(0.16)  # deliberately let the kernel output queue back up
         os.kill(s.proc.pid, signal.SIGINT)
@@ -819,7 +820,7 @@ def tests(binary, *, full, strict):
 
     # If the terminal never consumes its input, cleanup cannot be promised.
     # Even diagnostics on that same tty must not block shutdown indefinitely.
-    with Session([binary, "--island"], stderr_in_tty=True) as s:
+    with Session([binary, "--terminal", "--alternate-buffer"], stderr_in_tty=True) as s:
         s.until(ENTER)
         time.sleep(0.16)
         os.kill(s.proc.pid, signal.SIGINT)
@@ -828,7 +829,7 @@ def tests(binary, *, full, strict):
         assert elapsed < 1.5
     print("PASS stopped PTY reader cannot block signal exit and diagnostics indefinitely")
 
-    with Session([binary, "--island", "--measure"]) as s:
+    with Session([binary, "--alternate-buffer", "--measure"]) as s:
         s.until(b"\x1b[86;1H")
         os.kill(s.proc.pid, signal.SIGSTOP)
         time.sleep(0.65)
@@ -845,7 +846,7 @@ def tests(binary, *, full, strict):
     # stall exceeding the packet budget must not end the 30-second run.
     # Repeat during full repaint as well; that interrupted repaint must
     # not become the diff baseline.
-    with Session([binary, "--island", "--measure"], cols=290, rows=97) as s:
+    with Session([binary, "--alternate-buffer", "--measure"], cols=290, rows=97) as s:
         bottom = b"\x1b[97;1H"
         s.partial_next_frame(bottom, force_repaint=embedded)
         before_recoveries = s.raw.count(RESYNC)
@@ -876,7 +877,7 @@ def tests(binary, *, full, strict):
     # Exercise line-discipline flow control as well as a full kernel
     # queue. Depending on scheduling, TCOOFF may start between frame
     # packets or when the next packet has already sent a prefix.
-    with Session([binary, "--island", "--measure"], cols=165, rows=55) as s:
+    with Session([binary, "--alternate-buffer", "--measure"], cols=165, rows=55) as s:
         s.until(b"\x1b[55;1H")
         termios.tcflow(s.slave, termios.TCOOFF)
         try:
@@ -895,7 +896,7 @@ def tests(binary, *, full, strict):
 
     # Resume a recovery-waiting player with a key, not writable output.
     # CAN must make even a partially submitted escape harmless before exit.
-    with Session([binary, "--island"], cols=290, rows=97) as s:
+    with Session([binary, "--terminal", "--alternate-buffer"], cols=290, rows=97) as s:
         s.partial_next_frame(b"\x1b[97;1H", force_repaint=embedded)
         before_recoveries = s.raw.count(RESYNC)
         time.sleep(0.48)
@@ -910,7 +911,7 @@ def tests(binary, *, full, strict):
     # Resize right as the next packet is being received. The remaining bytes
     # may reach the tty before ioctl on a faster runner. Inspect the accepted
     # stream rather than assuming that a partial read implies a partial write.
-    with Session([binary, "--island"], cols=290, rows=97) as s:
+    with Session([binary, "--terminal", "--alternate-buffer"], cols=290, rows=97) as s:
         before = b"\x1b[97;1H"
         after = b"\x1b[85;1H"
         s.until(before)
@@ -935,7 +936,7 @@ def tests(binary, *, full, strict):
         quoted_path = "'" + binary.replace("'", "'\"'\"'") + "'"
         os.write(s.master, (
             "stty_before=$(stty -g); " + quoted_path
-            + " --island; r=$?; if [[ $(stty -g) = $stty_before ]]; then "
+            + " --terminal --alternate-buffer; r=$?; if [[ $(stty -g) = $stty_before ]]; then "
             + "printf 'CHECK_%s_OK\\n' \"$r\"; fi\n"
         ).encode())
         s.until(s.bottom)
@@ -943,7 +944,7 @@ def tests(binary, *, full, strict):
         s.until(b"CHECK_130_OK")
         os.write(s.master, (
             "stty_before=$(stty -g); " + quoted_path
-            + " --island; r=$?; if [[ $(stty -g) = $stty_before ]]; then "
+            + " --terminal --alternate-buffer; r=$?; if [[ $(stty -g) = $stty_before ]]; then "
             + "printf 'CHECK_%s_OK\n' \"$r\"; fi\n"
         ).encode())
         s.until(lambda raw: raw.count(ENTER) == 2)
@@ -966,7 +967,7 @@ def tests(binary, *, full, strict):
     if full:
         test_default_loop(binary, stall=True)
         test_custom_duration(binary)
-        with Session([binary, "--island", "--measure", "--once"]) as s:
+        with Session([binary, "--alternate-buffer", "--measure", "--once"]) as s:
             raw, err, elapsed = s.end(0, timeout=34)
             assert_scope(raw)
             first, last, count, field = timing_output(err)
@@ -987,7 +988,7 @@ def tests(binary, *, full, strict):
         print(f"PASS natural completion: {elapsed:.6f} s, {handled}/720 ticks, "
               f"{count} writes, {held} holds, {len(raw)} bytes")
         if not strict:
-            with Session([binary, "--island", "--measure", "--once"], cols=290, rows=97) as s:
+            with Session([binary, "--alternate-buffer", "--measure", "--once"], cols=290, rows=97) as s:
                 s.until(lambda _: time.monotonic() - s.start >= 29.68, timeout=32)
                 # Keep the tty congested across the absolute run deadline,
                 # then drain promptly enough to receive the bounded cleanup.

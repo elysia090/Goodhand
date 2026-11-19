@@ -1,48 +1,84 @@
-# oops 0.0.1 · terminal playback
+# oops 0.0.1 · playback pilot
 
-The packaged review runs as a single executable. From a normal foreground
-Xfce Terminal shell on GNU/Linux x86-64, run:
+### Island: an independent desktop window
 
-    ./oops --check
-    ./oops
-    ./oops --island
-    ./oops --dots
+Run `oops` from a normal shell in the optional Linux GTK3 desktop build.
+`--window` and `--island` explicitly select the same window. Press q or
+Esc to close, or use `oops --once` to stop after one turn. Successful
+playback does not write to the shell. This path has been checked on an
+Xfce composited GNU/Linux x86-64 desktop; it requires a composited RGBA
+visual, GTK3/GDK and Cairo.
 
-By default, oops draws only the artwork in the current shell, immediately
-below the command. It leaves prior shell output in the normal screen and
-scrollback, reserving at most three quarters of the visible rows (and no
-more than 80 rows). Use a dark terminal background for the intended
-contrast. `--island` draws only the artwork in a separate terminal
-buffer, using the current window size; it does not maximize the window.
-The minimum is 80 columns × 24 rows with UTF-8, true color, and
-single-cell Braille glyphs (or single-cell bullets with `--dots`).
-Drawings at the minimum size have fewer dots. For more detail, enlarge
-the terminal or use Island if height is limiting. Playback loops by
-default, taking 30 seconds per turn. Press q or Ctrl-C to return to the
-shell, or use `./oops --once` to stop after one turn. No config, video,
-guide, external artwork, Python, Rust installation or FFmpeg is required
-at runtime.
-The ELF uses the host's standard GNU/Linux loader and shared libraries.
+The default pane is pure black. The foreground uses its black-canvas
+grade on the 200×120 source grid: at the starting size, a 2×2 mark per
+occupied point and a five-pixel pitch. Occupied marks are opaque,
+including black points. Inside the artwork only, a restrained black
+matte fills some gaps between occupied points, fading out toward the
+silhouette and open finger spaces. It doesn't change the dots' RGB or alpha, and it is invisible
+when composited over pure black. The app neither blurs the image nor
+reads the desktop.
 
-By default the review build holds its 288 native poses on the 24 Hz clock
-for three and two ticks alternately, in the reviewed direction. Occupancy and gray remain separate:
-black can be occupied. Nothing is fetched or reconstructed during
-playback. A single envelope around all occupied samples in the full turn, plus
-three sample tiles on each side, is fit onto the terminal grid at a
-uniform scale. The framing and center are fixed across poses. This
-keeps the art larger without cropping at the default zoom. At small
-sizes, some detail is necessarily lost to the coarser cell grid.
-The standard archive presentation keeps the reviewed canvas, gray and timing. The result is a cell
-presentation, not pixel-exact video or a guarantee about every monitor,
-font, frame submission, or screen refresh.
+- The one-pixel outline appears under the pointer and disappears when it
+  leaves.
+- To move the window, left-drag the upper middle about 24 pixels down
+  from the rim, outside the buttons.
+- To resize, left-drag the upper-left or lower-right corner, or an edge
+  where the resize cursor appears. GTK delegates the gesture to the
+  window manager. The clear pane's minimum window size is 840×420.
+  The aperture keeps its aspect without clipping or stretching, even in
+  a differently shaped window. Resizing changes only its display scale,
+  using nearest-neighbor transport, not the source grid or timing.
+- At the top right, hover for maximize/restore and close. At the bottom
+  left, hover for appearance. Those controls do not resize or move the
+  artwork.
+
+The reviewed black pane opens in a 1024×576 client with a 1016×462
+visible box inside. It uses tighter framing, a fixed slight upward
+placement and 5 px rounded corners on both fill and hover outline.
+Drag the visible black rim.
+The foreground grade and native scale are unchanged. A larger
+embedded scene can retain the wide framing rather than clip.
+
+Use the appearance controls or set `window_appearance` in the explicit
+config. `safe` is the default pure black pane. `clear` is the 1120×560
+transparent pane; `framed` uses the same size and a light translucent
+neutral fill, without blur. `--config`, `--once`, `--duration` and
+`--direction` apply to Island. Terminal framing flags do not.
+
+The default 30-second turn schedules all 288 poses on its 24 Hz clock,
+holding them for three and two ticks in turn. Display refresh and actual
+submissions depend on the compositor. The [gray backdrop study](../../study/gray-backdrop/)
+is offline and does not change the appearance of Island.
+
+### Terminal fallback
+
+In a foreground Xfce/VTE-compatible GNU/Linux x86-64 terminal:
+
+    oops --check
+    oops --terminal
+    oops --terminal --alternate-buffer
+    oops --terminal --dots
+
+The terminal path is explicit. `--terminal` draws below the command,
+retaining the existing screen and scrollback. `--alternate-buffer` uses
+the alternate screen in that same terminal. It does not open a window.
+Use a dark background and at least 80 columns × 24 rows with UTF-8 and
+true color. A larger viewport preserves more of the dot detail. Press q
+or Ctrl-C to return to the shell, or pass `--once` for one turn.
+
+The terminal maps a fixed, padded full-turn envelope onto the cell grid.
+The embedded archive keeps all 288 scheduled poses on its regular 24 Hz
+timeline. The terminal may miss submissions, and its shared cell colors
+cannot preserve every independent native dot value. Neither Island nor
+terminal playback needs external video, Python, or FFmpeg once built.
 
 ### Framing and configuration
 
     oops --check --zoom 85
-    oops --zoom 120 --cell-aspect 0.4667
-    oops --duration 24 --direction forward --offset-x -10 --brightness 85
+    oops --terminal --zoom 120 --cell-aspect 0.4667
+    oops --terminal --duration 24 --direction forward --offset-x -10 --brightness 85
     oops --config oops.example.conf --measure
-    oops --once --duration 30
+    oops --terminal --once --duration 30
 
 - `--zoom PERCENT` accepts an integer from 50 through 200. At 100 the
   full-turn envelope and its margin fit the drawable grid. Below 100 the
@@ -73,7 +109,7 @@ font, frame submission, or screen refresh.
   drawing grid's width and height, respectively. Positive x moves right;
   positive y moves down. Shifts are independent of zoom, stay proportional
   on resize, and can crop at the drawing grid's edges.
-- Braille is the default in both normal and Island playback. Each cell
+- Braille is the default in both terminal buffers. Each cell
   samples a 2×4 grid and displays the rounded mean gray of its occupied
   dots. This shows more of the authored silhouette at the same size,
   but cannot preserve a different gray for every dot or add detail
@@ -115,8 +151,8 @@ viewport is neither rendered nor written again. The app temporarily turns off ca
 input and echo without changing terminal signals. Normal completion, q, and
 handled signals restore the original keyboard attributes and cursor
 visibility. Inline returns the prompt below the command and erases only
-its reserved rows. Island leaves the separate buffer so the original
-shell is shown again. Inline
+its reserved rows. Alternate-screen playback leaves its buffer so the
+original shell is shown again. Inline
 asks VTE for its two cursor positions, not existing screen text. As a
 window or font resize settles, it re-fits the visible reserved area.
 Ordinary width-only changes can redraw during the drag when the earlier
@@ -151,23 +187,28 @@ not compositor or display timing.
 
 ### Developer build and validation
 
-The distribution build embeds only the reviewed 200×120 GHSH occupancy
-and matching GHT8 gray, with 288 poses at 24 Hz. The default player schedule
-matches the ordered 30-second review. Supply the **absolute path** to a verified
-private directory containing `shape.ghs` and `tone.ght` at build time:
+A build with no extra inputs uses the procedural developer scene.
+Run that executable with `--terminal`; requesting Island gives a
+diagnostic rather than silently switching to text. This is not the
+reviewed desktop artwork. The checked-in offline references are not
+used to build or run the player.
+
+The optional archive build embeds a 200×120 GHSH occupancy and matching
+GHT8 gray pair, with 288 poses at 24 Hz. This requires the absolute path
+to an independently verified directory containing `shape.ghs` and
+`tone.ght` at build time. A missing or invalid explicit input fails
+the build. With a composited GTK3 desktop:
 
     GOODHAND_PLAYBACK_DIR=/absolute/path/to/verified-data \
-      cargo build --offline --release --locked
+      cargo build --offline --release --locked --features desktop-window
 
-An explicit directory with missing or invalid data fails the build, not
-falls back to a different scene. Check for `embedded review` in
-`target/release/oops --help` before packaging. Do not include the build
-input directory in the distribution. Source checks without that variable
-use the procedural developer scene; that executable is not the reviewed
-package. CI also exercises the embedded path with synthetic data.
+Omit `--features desktop-window` for a terminal-only build. To reproduce
+the current reviewed black-canvas art, use the W5 inputs and switch below.
+This project does not distribute the required W4 pair or a desktop binary.
 
     cargo test --offline --locked
     cargo clippy --offline --locked --all-targets -- -D warnings
+    cargo build --offline --release --locked
     python3 tests/pty_smoke.py target/release/oops --full
 
 ### W5 shading build
@@ -175,15 +216,17 @@ package. CI also exercises the embedded path with synthetic data.
 W5 groups the upper forearm return into a quieter dark plane and gives
 the lower bearing plane more weight. It is a build-time opt-in layered on
 the **exact reviewed W4 occupancy and tone pair**. It changes gray codes
-only at the reviewed angles; it does not change glyph positions,
-framing, turn order, or the 24 Hz playback clock.
+only at the reviewed angles, not occupancy or the 24 Hz timeline. In
+Island, only the signed correction is transferred from the calibrated
+view to occupied native dots; their original values are not averaged
+into terminal-cell tones.
 
-On GNU/Linux, with `sha256sum` on the build host and the previously
+From the repository root on GNU/Linux, with `sha256sum` on the build host and the previously
 verified W4 `shape.ghs` and `tone.ght` already available locally:
 
     GOODHAND_TONE_PROFILE=w5 \
       GOODHAND_PLAYBACK_DIR=/absolute/path/to/verified-w4 \
-      cargo build --manifest-path tools/oops/Cargo.toml --offline --release --locked
+      cargo build --manifest-path tools/oops/Cargo.toml --offline --release --locked --features desktop-window
 
 The build verifies both inputs before embedding them. It rejects other
 archives rather than applying W5 to unrelated images. This repository
@@ -197,7 +240,7 @@ In a 116-column × 41-row terminal with a dark background, check and
 play the W5 build from a normal prompt:
 
     ./tools/oops/target/release/oops --cell-aspect 0.5 --check
-    ./tools/oops/target/release/oops --cell-aspect 0.5 --once
+    ./tools/oops/target/release/oops --terminal --cell-aspect 0.5 --once
 
 `--check` reports whether W5 is active for the planned layout. The
 reviewed view uses a 115 × 27 Braille drawing grid, 0.5 cell aspect, 30-second
@@ -207,7 +250,10 @@ asset, checksum utility, or source dependency at runtime.
 
 ### Verification
 
-Native lossless verification compares the ordered, decoded 2×2-dot raster
-and its timestamps; kernel PTY checks separately exercise the terminal
-geometry, deadlines and teardown. A passing headless check does not certify
-the result on another terminal or physical display.
+The desktop-feature tests exercise raster coverage, opaque black,
+interior matte containment, resize fit and pointer-control geometry
+without a desktop session. The shared
+archive tests check the hold schedule.
+Kernel PTY checks separately exercise terminal geometry, deadlines and
+teardown. Those checks do not establish compositor behavior, refresh,
+or another platform’s behavior.

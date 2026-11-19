@@ -1,7 +1,7 @@
 # Goodhand
 
-A small Rust library and terminal pilot for a rotating hand artwork.
-Shape, grayscale tone, timing, and terminal placement have separate contracts.
+A small Rust library and playback pilot for a rotating hand artwork.
+Shape, tone, timing, and display placement have separate contracts.
 Offline Python tools prepare and inspect data; they are not runtime dependencies.
 The [visual baseline](reference/visual-baseline/) is the approved appearance
 for comparison. The [source study](reference/source-study/) preserves the
@@ -43,17 +43,22 @@ to caller-owned buffers, with no frame data or video input. The new
 model is an approximation of the visual baseline, not a reconstruction
 of its underlying geometry. See the [base and attr design](docs/generative-base.md).
 
-## Terminal playback
+## Playback
 
-Run the packaged `oops` executable from a foreground Xfce-compatible
-GNU/Linux x86-64 terminal. `./oops --check` checks the resolved framing.
-`./oops` loops the embedded review directly below the shell command at
-30 seconds per turn. Use `./oops --island` to draw in a separate terminal
-buffer without resizing the window. Press q or Ctrl-C to exit, or use
-`./oops --once` for one turn. No media files, config or developer tools are needed to run
-it. The [terminal guide](tools/oops/README.md) covers optional duration,
-direction, position, zoom, and brightness settings, plus how to build
-the executable with verified review content.
+On the Linux GTK3 desktop build, run `oops` from a normal shell to open
+**Island**, a separate Goodhand window with an opaque black pane by
+default. The artwork keeps its opaque dots and black-canvas grade.
+The appearance menu also offers a clear pane with interior reinforcement;
+the app never reads the desktop. Move the pointer inside the panel for
+its 1px outline. Drag from the upper middle to move, or drag the edges
+or lower-right corner to resize. Press q or Esc to close; successful
+playback adds no shell output.
+
+The source-only build has no embedded review archive. Use
+`oops --terminal` for the procedural terminal view; `--alternate-buffer`
+is an optional terminal change, not Island. See the [playback guide](tools/oops/README.md)
+for supported builds and terminal settings. The [gray backdrop](study/gray-backdrop/)
+is an offline study, not a runtime mode.
 
 ## Checks
 

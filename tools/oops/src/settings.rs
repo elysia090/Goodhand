@@ -120,6 +120,27 @@ impl FromStr for Brightness {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WindowAppearance {
+    #[default]
+    Safe,
+    Clear,
+    Framed,
+}
+
+impl FromStr for WindowAppearance {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "safe" => Ok(Self::Safe),
+            "clear" => Ok(Self::Clear),
+            "framed" => Ok(Self::Framed),
+            _ => Err("expected framed, clear, or safe"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
     pub zoom: Zoom,
@@ -128,6 +149,7 @@ pub struct Settings {
     pub offset: [Offset; 2],
     pub brightness: Brightness,
     pub renderer: Renderer,
+    pub window_appearance: WindowAppearance,
 }
 
 impl Default for Settings {
@@ -139,6 +161,7 @@ impl Default for Settings {
             offset: [Offset::default(); 2],
             brightness: Brightness::default(),
             renderer: Renderer::default(),
+            window_appearance: WindowAppearance::default(),
         }
     }
 }
@@ -167,9 +190,19 @@ pub struct Overrides {
     offset_y: Option<Offset>,
     brightness: Option<Brightness>,
     renderer: Option<Renderer>,
+    window_appearance: Option<WindowAppearance>,
 }
 
 impl Overrides {
+    pub fn has_terminal_display_flags(&self) -> bool {
+        self.zoom.is_some()
+            || self.cell_aspect.is_some()
+            || self.offset_x.is_some()
+            || self.offset_y.is_some()
+            || self.brightness.is_some()
+            || self.renderer.is_some()
+    }
+
     pub fn apply(self, defaults: Settings) -> Settings {
         Settings {
             zoom: self.zoom.unwrap_or(defaults.zoom),
@@ -184,6 +217,7 @@ impl Overrides {
             ],
             brightness: self.brightness.unwrap_or(defaults.brightness),
             renderer: self.renderer.unwrap_or(defaults.renderer),
+            window_appearance: self.window_appearance.unwrap_or(defaults.window_appearance),
         }
     }
 
@@ -197,6 +231,7 @@ impl Overrides {
             Key::OffsetY => set(&mut self.offset_y, value),
             Key::Brightness => set(&mut self.brightness, value),
             Key::Renderer => set(&mut self.renderer, value),
+            Key::WindowAppearance => set(&mut self.window_appearance, value),
         }
     }
 }
@@ -211,6 +246,7 @@ pub enum Key {
     OffsetY,
     Brightness,
     Renderer,
+    WindowAppearance,
 }
 
 impl Key {
@@ -232,8 +268,10 @@ impl Key {
 
     fn from_config(name: &str) -> Option<Self> {
         // Dots has a value-free CLI shortcut, not a generic value flag.
-        if name == "renderer" {
-            return Some(Self::Renderer);
+        match name {
+            "renderer" => return Some(Self::Renderer),
+            "window_appearance" => return Some(Self::WindowAppearance),
+            _ => (),
         }
         Self::NAMES
             .iter()
@@ -311,6 +349,27 @@ fn read_config_inner(path: &Path) -> Result<Overrides, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn appearance_is_config_only_and_rejects_aliases_or_duplicates() {
+        for (key, wanted) in [
+            ("safe", WindowAppearance::Safe),
+            ("clear", WindowAppearance::Clear),
+            ("framed", WindowAppearance::Framed),
+        ] {
+            let settings = parse_config(&format!("window_appearance = {key}"))
+                .unwrap()
+                .apply(Settings::default());
+            assert_eq!(settings.window_appearance, wanted);
+        }
+        assert!(parse_config("window_appearance=transparent").is_err());
+        assert!(parse_config("window_appearance=clear\nwindow_appearance=framed").is_err());
+        assert!(Key::from_flag("--window-appearance").is_none());
+        assert_eq!(
+            Settings::default().window_appearance,
+            WindowAppearance::Safe
+        );
+    }
 
     #[test]
     fn config_accepts_comments_whitespace_and_crlf() {
