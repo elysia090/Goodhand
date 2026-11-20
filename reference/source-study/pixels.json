@@ -1,0 +1,28 @@
+{
+  "width": 1000,
+  "height": 640,
+  "fps": 24,
+  "frames": 288,
+  "period_seconds": 12,
+  "grid": {
+    "columns": 200,
+    "rows": 120,
+    "pitch_px": 5,
+    "dot_size_px": [
+      2,
+      2
+    ],
+    "dot_origin_px": [
+      2,
+      42
+    ]
+  },
+  "direction": "reverse",
+  "mask_status": "observed_candidate",
+  "source_kind": "authored",
+  "output_sha256": "d1d6dccaa2ddaac86dec506db80e42df6faf4c8ff8b4f441b0375a48baddf996",
+  "generation": {
+    "method": "Archived source-study gray snapshot, with original independent occupancy and zero gray only outside occupied cells.",
+    "parent_observation_sha256": "4faeb14fc8ee683a6fb412265638133d5420c3a68f43f3dd6a800ce157c8bbe1"
+  }
+}

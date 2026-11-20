@@ -1,0 +1,100 @@
+name: Desktop build checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            msvc: x64
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            msvc: arm64
+    env:
+      TOOLCHAIN: "1.100.0-${{ matrix.target }}"
+      CARGO_TERM_COLOR: always
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.gitignore
+            /Cargo.toml
+            /Cargo.lock
+            /src/
+            /tools/oops/
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install pinned Rust and generate synthetic playback data
+        shell: bash
+        run: |
+          rustup toolchain install "$TOOLCHAIN" --profile minimal
+          python tools/oops/tests/make_review_fixture.py "$RUNNER_TEMP/desktop-fixture"
+          python -m unittest discover -s tools/oops/release -p 'test_*.py'
+      - name: Linux GTK and headless display
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-3-0t64 xvfb xauth
+      - name: Validate native desktop build
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          export GOODHAND_PLAYBACK_DIR="$RUNNER_TEMP/desktop-fixture"
+          cargo +"$TOOLCHAIN" test --manifest-path tools/oops/Cargo.toml --offline --locked --release --features desktop-window
+          cargo +"$TOOLCHAIN" build --manifest-path tools/oops/Cargo.toml --offline --locked --release --features desktop-window
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            timeout 25 xvfb-run -a tools/oops/target/release/oops --once --duration 12
+          fi
+      - name: Validate MSVC native desktop build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSVC_ARCH: ${{ matrix.msvc }}
+        run: |
+          $locator = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $locator -latest -products '*' -property installationPath
+          if (-not $vs) { throw "Visual Studio build tools not installed" }
+          $env:GOODHAND_PLAYBACK_DIR = Join-Path $env:RUNNER_TEMP "desktop-fixture"
+          $batch = Join-Path $env:RUNNER_TEMP "goodhand-native.cmd"
+          @"
+          @echo off
+          call "$vs\Common7\Tools\VsDevCmd.bat" -no_logo -host_arch=$env:MSVC_ARCH -arch=$env:MSVC_ARCH
+          if errorlevel 1 exit /b 1
+          cargo +$env:TOOLCHAIN test --manifest-path tools/oops/Cargo.toml --offline --locked --release --features desktop-window
+          if errorlevel 1 exit /b 1
+          cargo +$env:TOOLCHAIN build --manifest-path tools/oops/Cargo.toml --offline --locked --release --features desktop-window
+          "@ | Set-Content -Path $batch -Encoding ascii
+          & cmd.exe /d /c "`"$batch`""
+          exit $LASTEXITCODE

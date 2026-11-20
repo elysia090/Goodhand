@@ -1,0 +1,10 @@
+[package]
+name = "goodhand"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.70"
+publish = false
+license = "MIT"
+description = "Validated, borrowed neutral 2D shape sequences for Goodhand"
+
+[dependencies]
