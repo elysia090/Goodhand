@@ -4,20 +4,23 @@
 with 540 distinct artwork phases at 18 fps. The black canvas preserves the
 original point grid and the familiar window frame belongs to your desktop.
 
-![v0.0.1 planned, 18 fps, x64 and ARM64, MIT software](docs/release-badges.svg)
+[![Source version: v0.0.1](https://img.shields.io/badge/source-v0.0.1-lightgrey?style=flat)](https://github.com/elysia090/Goodhand/releases)
+[![Playback: 18 fps](https://img.shields.io/badge/playback-18%20fps-blue?style=flat)](#open-oops)
+[![Chip targets: x64 and ARM64](https://img.shields.io/badge/targets-x64%20%7C%20ARM64-informational?style=flat)](#downloads)
+[![Software license: MIT](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
 
 ## Downloads
 
-No v0.0.1 binaries have been published. Verified packages will appear on
+Available packages are listed on
 [GitHub Releases](https://github.com/elysia090/Goodhand/releases). macOS
 downloads are on hold; the AppKit source and its build checks stay in
 the project.
 
 | Desktop | Chip | Verification | Download |
 | --- | --- | --- | --- |
-| Linux | `x64` · Intel / AMD | Reviewed artwork ran on native Xfce | Not published |
+| Linux | `x64` · Intel / AMD | Reviewed artwork ran on native Xfce | See Releases |
 | Linux | `ARM64` · 64-bit Arm | Synthetic CI only | Pending native check |
-| Windows | `x64` · Intel / AMD | Synthetic CI only | Pending native check |
+| Windows | `x64` · Intel / AMD | Synthetic CI; native verification separate | See Releases |
 | Windows | `ARM64` · 64-bit Arm | Synthetic CI only | Pending native check |
 | macOS | `x64` · Intel Mac | Synthetic CI only | On hold |
 | macOS | `ARM64` · Apple silicon | Synthetic CI only | On hold |
@@ -28,14 +31,20 @@ for native verification and signing.
 
 ## Open oops
 
-Once your package is available, extract it and open `oops.exe` on Windows
-or `oops` on Linux. Linux needs a GTK 3 desktop runtime; you can also run
-`./oops` from a shell.
+1. Open [GitHub Releases](https://github.com/elysia090/Goodhand/releases).
+   Choose **x64** for 64-bit Intel or AMD, or **ARM64** for a 64-bit Arm
+   chip, when a package is listed for your OS.
+2. Extract the archive. On Windows, open `oops.exe` from the extracted
+   folder. On Linux, open `oops` or run `./oops` from that folder.
+   The Linux x64 build requires a GTK 3 desktop runtime and glibc 2.35
+   or later.
+3. Resize the window to fit. Close it, or press **q** or **Esc**, to stop.
 
-Close the window, press **q** or **Esc**, or use `--once` for one turn.
-Resize to fit without stretching. The desktop app needs no terminal,
-video player, Python or network connection. The display and compositor may
-miss a frame under load.
+To play one 30-second turn and exit, run `./oops --once` on Linux or
+`.\oops.exe --once` in PowerShell on Windows.
+
+The app does not need a terminal to play, a video player, or a network
+connection. A busy desktop compositor can skip displayed frames.
 
 ## Develop
 
