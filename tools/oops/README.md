@@ -25,10 +25,15 @@ neutral background. The native frame is the same in all three modes.
 `--config`, `--once`, `--duration` and `--direction` apply to Island.
 Terminal framing flags do not.
 
-The default 30-second turn schedules all 288 poses on its 24 Hz clock,
-holding them for three and two ticks in turn. Display refresh and actual
-submissions depend on the compositor. The [gray backdrop reference](../../reference/gray-backdrop/)
-is offline and does not change the appearance of Island.
+The reviewed W5 window defaults to a 30-second turn with 540 distinct
+artwork phases, one per tick on an 18 Hz timeline. The motion archive
+contains additional shapes and tones on the same point grid, not frame
+holds or crossfades. The native window follows the absolute timeline;
+monitor refresh and the compositor determine exact presentation times.
+Other turn lengths and desktop builds without the W5 tone profile keep
+the original 24 Hz schedule of 288 archived poses. The
+[gray backdrop reference](../../reference/gray-backdrop/) is offline and
+does not change the appearance of Island.
 
 ### Terminal fallback
 
@@ -74,14 +79,15 @@ terminal playback needs external video, Python, or FFmpeg once built.
   over TTY measurements throughout the run. Recheck it after a font
   change that changes the cell proportions.
 - `--duration SECONDS` selects 12 through 60 whole seconds for one turn.
-  The timeline always runs at 24 Hz. Each archived pose starts at the
+  On the original 24 Hz timeline, each archived pose starts at the
   nearest tick to its equally spaced time (ties round up), so every
   pose has at least one scheduled tick. A slow terminal may still miss
-  submissions. The procedural developer scene samples the corresponding
-  yaw on each tick.
+  submissions. The W5 window uses its 18 Hz motion archive at 30 seconds
+  only; other turn lengths use the archived schedule. The procedural
+  terminal developer scene samples the corresponding yaw on each tick.
 - `--direction reverse` (the default) follows the reviewed order.
   `--direction forward` uses the same opening pose and visits the other
-  poses in reverse order, with the same hold schedule. It does not
+  phases in reverse order, on the same timeline. It does not
   mirror the image. The last pose precedes the wrap; the opening pose
   is played at the next turn's first tick without a pause or extra hold.
 - `--offset-x PERCENT` and `--offset-y PERCENT` shift the artwork from
@@ -195,26 +201,38 @@ This project does not distribute the required W4 pair or a desktop binary.
 
 W5 groups the upper forearm return into a quieter dark plane and gives
 the lower bearing plane more weight. It is a build-time opt-in layered on
-the **exact reviewed W4 occupancy and tone pair**. It changes gray codes
-only at the reviewed angles, not occupancy or the 24 Hz timeline. In
+the **exact reviewed W4 occupancy and tone pair**. The source W5
+correction changes gray codes at the reviewed angles, not occupancy. In
 Island, only the signed correction is transferred from the calibrated
 view to occupied native dots; their original values are not averaged
-into terminal-cell tones.
+into terminal-cell tones. For the 30-second turn, Island uses the private
+W5 motion archive, with additional sampled shapes and tones between
+reviewed phases. The motion archive must match the approved window
+bounds and uses the same display grade.
 
-From the repository root on GNU/Linux, with `sha256sum` on the build host and the previously
-verified W4 `shape.ghs` and `tone.ght` already available locally:
+From the repository root on GNU/Linux, with `sha256sum` and the
+verified W4 and W5 motion pairs available locally (each directory
+contains `shape.ghs` and `tone.ght`):
 
     GOODHAND_TONE_PROFILE=w5 \
       GOODHAND_PLAYBACK_DIR=/absolute/path/to/verified-w4 \
+      GOODHAND_NATIVE_MOTION_DIR=/absolute/path/to/verified-w5-motion \
       cargo build --manifest-path tools/oops/Cargo.toml --offline --release --locked --features desktop-window
 
-The build verifies both inputs before embedding them. It rejects other
-archives rather than applying W5 to unrelated images. This repository
-supplies the W5 rules and coefficients, not the required W4 archive.
-Neither the public offline references nor a clean source-only build
-reproduce the reviewed W5 image. With no archive, the executable runs the
-procedural developer scene. With an archive but no tone profile, it
-uses the archive's original tones, as before.
+The build verifies the exact inputs and embeds them. It rejects a
+missing or different motion pair for the reviewed W5 desktop build
+instead of silently showing repeated poses for the default turn. To
+build W5 for the terminal only, omit both `GOODHAND_NATIVE_MOTION_DIR`
+and `--features desktop-window`. The terminal keeps the 288 reviewed
+poses and its original 24 Hz timing.
+
+This repository supplies the W5 rules and coefficients, not the
+required W4 or motion archive. Neither the public offline references
+nor a clean source-only build reproduce the reviewed W5 image. With no
+archive, terminal playback uses the procedural developer scene and
+native playback reports that the window is unavailable. With an
+archive but no tone profile, playback uses its original tones and
+hold schedule.
 
 In a 116-column × 41-row terminal with a dark background, check and
 play the W5 build from a normal prompt:
@@ -231,9 +249,10 @@ asset, checksum utility, or source dependency at runtime.
 ### Verification
 
 The desktop-feature tests exercise raster coverage, opaque black,
-interior matte containment, resize fit and pointer-control geometry
-without a desktop session. The shared
-archive tests check the hold schedule.
+interior matte containment and resize fit without a desktop session.
+With the verified W5 inputs, they also check every 18 Hz phase, the
+30-second wrap, and exact agreement at coincident reviewed phases.
+The shared archive tests check the original terminal hold schedule.
 Kernel PTY checks separately exercise terminal geometry, deadlines and
 teardown. Those checks do not establish compositor behavior, refresh,
 or another platform’s behavior.

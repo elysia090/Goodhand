@@ -20,6 +20,13 @@ unsafe extern "C" {
     pub fn gtk_widget_get_allocated_width(widget: Ptr) -> c_int;
     pub fn gtk_widget_get_allocated_height(widget: Ptr) -> c_int;
     pub fn gtk_widget_queue_draw(widget: Ptr);
+    pub fn gtk_widget_add_tick_callback(
+        widget: Ptr,
+        callback: unsafe extern "C" fn(Ptr, Ptr, Ptr) -> c_int,
+        data: Ptr,
+        destroy: Option<unsafe extern "C" fn(Ptr)>,
+    ) -> c_uint;
+    pub fn gtk_widget_remove_tick_callback(widget: Ptr, id: c_uint);
     pub fn gtk_widget_destroy(widget: Ptr);
     pub fn gtk_main();
     pub fn gtk_main_quit();

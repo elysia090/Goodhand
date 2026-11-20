@@ -8,10 +8,11 @@ for comparison. The [source study](reference/source-study/) preserves the
 earlier authored gray and the independent occupancy shared by both snapshots.
 They are offline references, not runtime inputs. Source imagery is not included.
 
-The packaged player reads its embedded fixed-grid review. The source-only
-developer build instead renders the generative model. Neither reads the
-offline reference files at runtime. See [design and quality gates](DESIGN.md)
-and the [tone input contract](docs/tone.md).
+The packaged player uses embedded fixed-grid artwork. The reviewed W5
+desktop build plays its 30-second turn at 18 distinct artwork phases per
+second. The source-only developer build instead renders the generative model.
+Neither reads the offline reference files at runtime. See the
+[design and quality gates](DESIGN.md) and the [tone input contract](docs/tone.md).
 
 ## Library
 
@@ -48,9 +49,11 @@ of its underlying geometry. See the [base and attr design](docs/generative-base.
 On the Linux GTK3 desktop build, run `oops` from a normal shell to open
 **Island**, a separate Goodhand window with a black background by default.
 The desktop provides the title bar, window buttons, and resize handles.
-Press t on a composited desktop to switch between black, lightly tinted,
-and clear backgrounds. The app never reads the desktop. Press q or Esc
-to close; successful playback adds no shell output.
+The reviewed W5 build uses the same native canvas at 18 artwork frames per
+second for the default 30-second turn. Press t on a composited desktop to
+switch between black, lightly tinted, and clear backgrounds. The app never
+reads the desktop. Press q or Esc to close; successful playback adds no
+shell output.
 
 The source-only build has no embedded review archive. Use
 `oops --terminal` for the procedural terminal view; `--alternate-buffer`

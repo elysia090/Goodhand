@@ -5,7 +5,6 @@ mod sys;
 
 use self::interior_matte::InteriorMatte;
 use self::sys::*;
-use crate::archived_scene::pose_at_tick;
 use crate::black_grade;
 use crate::playback::{Cycle, Repeat, Timeline};
 use crate::reference_frame::ReferenceFrame;
@@ -156,7 +155,8 @@ struct Window {
     matte: InteriorMatte,
     foreground: [u32; 256],
     timeline: Timeline,
-    time: Instant,
+    time: Option<Instant>,
+    once_timeout: Option<c_uint>,
     initial_size: Option<(c_int, c_int)>,
     translucent: bool,
     pose: u32,
@@ -170,7 +170,7 @@ impl Window {
         appearance: WindowAppearance,
         cycle: Cycle,
     ) -> io::Result<Self> {
-        let renderer = ReferenceFrame::new()?;
+        let renderer = ReferenceFrame::new(cycle)?;
         let apertures = Apertures::new(renderer.occupied_bounds()?)?;
         Ok(Self {
             handle,
@@ -183,7 +183,8 @@ impl Window {
             matte: InteriorMatte::new(),
             foreground: black_grade::palette().map(|rgb| argb(rgb, true)),
             timeline: Timeline { cycle, repeat },
-            time: Instant::now(),
+            time: None,
+            once_timeout: None,
             initial_size: None,
             translucent: false,
             pose: 0,
@@ -238,17 +239,31 @@ impl Window {
     }
 
     fn paint(&mut self) {
-        for (pixel, (&gray, &alpha)) in self.argb.iter_mut().zip(self.light.iter().zip(&self.alpha))
-        {
-            *pixel = if alpha != 0 {
-                self.foreground[usize::from(gray)]
-            } else {
-                0
-            };
-        }
+        paint_dots(&self.light, &self.alpha, &self.foreground, &mut self.argb);
         self.matte.apply(&self.light, &self.alpha, &mut self.argb);
         if self.appearance == WindowAppearance::Safe {
             bearing_tone::apply(&self.matte, &self.light, &mut self.argb);
+        }
+    }
+}
+
+fn paint_dots(gray: &[u8], occupied: &[u8], palette: &[u32; 256], output: &mut [u32]) {
+    let spec = RasterSpec::REFERENCE;
+    output.fill(0);
+    // ReferenceFrame writes one uniform gray and occupancy per source dot.
+    // Visit dot origins, not the empty pixels between the fixed footprints.
+    for y in 0..usize::from(crate::archive_profile::HEIGHT) {
+        let start = (spec.origin[1] + y * spec.pitch[1]) * spec.width + spec.origin[0];
+        for x in 0..usize::from(crate::archive_profile::WIDTH) {
+            let first = start + x * spec.pitch[0];
+            if occupied[first] == 0 {
+                continue;
+            }
+            let color = palette[usize::from(gray[first])];
+            for row in 0..spec.dot_size[1] {
+                let left = first + row * spec.width;
+                output[left..left + spec.dot_size[0]].fill(color);
+            }
         }
     }
 }
@@ -262,8 +277,8 @@ fn argb([r, g, b]: [u8; 3], present: bool) -> u32 {
 }
 
 pub(crate) fn run(repeat: Repeat, appearance: WindowAppearance, cycle: Cycle) -> io::Result<()> {
-    // All GTK state and callbacks live on this thread. Signals and timer are
-    // destroyed before their data (the Box) is released. The FFI adapter is
+    // All GTK state and callbacks live on this thread. Remove the callbacks
+    // before releasing their data (the Box). The FFI adapter is
     // not linked by the source-only terminal build.
     unsafe {
         if gtk_init_check(null_mut(), null_mut()) == 0 {
@@ -326,14 +341,16 @@ pub(crate) fn run(repeat: Repeat, appearance: WindowAppearance, cycle: Cycle) ->
             );
         }
         gtk_widget_show_all(handle);
-        state.time = Instant::now();
-        let timeout = g_timeout_add(6, tick, data);
-        if timeout == 0 {
+        let callback = gtk_widget_add_tick_callback(handle, tick, data, None);
+        if callback == 0 {
             gtk_widget_destroy(handle);
-            return Err(io::Error::other("GTK playback timer could not start"));
+            return Err(io::Error::other("GTK playback frame clock could not start"));
         }
         gtk_main();
-        g_source_remove(timeout);
+        if let Some(timeout) = state.once_timeout.take() {
+            g_source_remove(timeout);
+        }
+        gtk_widget_remove_tick_callback(handle, callback);
         gtk_widget_destroy(handle);
         if let Some(error) = state.error.take() {
             return Err(error);
@@ -375,10 +392,32 @@ unsafe extern "C" fn key(widget: Ptr, event: Ptr, data: Ptr) -> c_int {
     0
 }
 
-unsafe extern "C" fn tick(data: Ptr) -> c_int {
-    // GLib invokes timers serially on the GTK event-loop thread.
+unsafe extern "C" fn stop_once(data: Ptr) -> c_int {
     let state: &mut Window = unsafe { &mut *data.cast::<Window>() };
-    let elapsed = state.time.elapsed();
+    state.once_timeout = None;
+    unsafe { gtk_main_quit() };
+    // Remove this one-shot source.
+    0
+}
+
+unsafe extern "C" fn tick(_widget: Ptr, _clock: Ptr, data: Ptr) -> c_int {
+    // GTK invokes updates ahead of drawing on the same thread. The absolute
+    // clock doesn't accumulate refresh quantization or queue stale artwork.
+    let state: &mut Window = unsafe { &mut *data.cast::<Window>() };
+    let now = Instant::now();
+    if state.time.is_none() && state.timeline.repeat == Repeat::Once {
+        // A hidden/minimized widget can stop receiving frame-clock callbacks.
+        // Keep the one-turn exit independent of desktop visibility.
+        let milliseconds = state.timeline.cycle.length().as_millis() as c_uint;
+        let timeout = unsafe { g_timeout_add(milliseconds, stop_once, data) };
+        if timeout == 0 {
+            state.error = Some(io::Error::other("GTK one-turn timer could not start"));
+            unsafe { gtk_main_quit() };
+            return 1;
+        }
+        state.once_timeout = Some(timeout);
+    }
+    let elapsed = state.time.get_or_insert(now).elapsed();
     // Honor the requested floating start size on a desktop that fits the
     // mapped window to its work area. Never override later user resizing.
     if let Some((w, h)) = state.initial_size {
@@ -392,11 +431,11 @@ unsafe extern "C" fn tick(data: Ptr) -> c_int {
             }
         }
     }
-    let Some(slot) = state.timeline.sample(elapsed) else {
+    let Some(tick) = state.renderer.tick_for(state.timeline, elapsed) else {
         unsafe { gtk_main_quit() };
         return 1;
     };
-    let Some(pose) = pose_at_tick(state.timeline.cycle, slot.phase.tick) else {
+    let Some(pose) = state.renderer.pose_at_tick(state.timeline.cycle, tick) else {
         return 1;
     };
     if pose != state.pose {
@@ -466,6 +505,122 @@ unsafe extern "C" fn draw(_widget: Ptr, canvas: Ptr, data: Ptr) -> c_int {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_motion_takes_every_scheduled_index_in_both_directions() {
+        use crate::archive_profile::{NATIVE_MOTION_FPS, NATIVE_MOTION_POSES};
+        use crate::playback::Direction;
+        use crate::reference_frame::{motion_pose_at_tick, motion_tick};
+        let reverse = Cycle::default();
+        let forward = Cycle {
+            direction: Direction::Forward,
+            ..reverse
+        };
+        let ticks = u64::from(NATIVE_MOTION_POSES);
+        let fps = u64::from(NATIVE_MOTION_FPS);
+        assert_eq!(ticks, 30 * fps);
+        let looping = Timeline {
+            cycle: reverse,
+            repeat: Repeat::Loop,
+        };
+        let once = Timeline {
+            cycle: reverse,
+            repeat: Repeat::Once,
+        };
+        let turn = Duration::from_secs(30);
+        for tick in 0..ticks {
+            let instant = Duration::from_nanos((tick * 1_000_000_000).div_ceil(fps));
+            assert_eq!(motion_tick(once, instant), Some(tick));
+            assert_eq!(motion_tick(looping, turn + instant), Some(tick));
+            if tick > 0 {
+                assert_eq!(
+                    motion_tick(once, instant - Duration::from_nanos(1)),
+                    Some(tick - 1)
+                );
+            }
+            assert_eq!(motion_pose_at_tick(reverse, tick), Some(tick as u32));
+            assert_eq!(
+                motion_pose_at_tick(forward, tick),
+                Some(((ticks - tick) % ticks) as u32)
+            );
+        }
+        assert_eq!(motion_tick(once, turn), None);
+        assert_eq!(motion_tick(looping, turn), Some(0));
+        assert_eq!(motion_pose_at_tick(reverse, ticks), None);
+        assert_eq!(motion_pose_at_tick(forward, ticks), None);
+        let twelve = Cycle {
+            duration: "12".parse().unwrap(),
+            ..reverse
+        };
+        assert_eq!(motion_pose_at_tick(twelve, 0), None);
+    }
+
+    #[cfg(goodhand_native_motion)]
+    fn black_point_signature(argb: &[u32], canvas: Canvas) -> u64 {
+        let spec = RasterSpec::REFERENCE;
+        let view = Placement::new(canvas, 1016, 445);
+        let (xoff, yoff) = view.raster_origin(canvas);
+        let mut signature = 0xcbf2_9ce4_8422_2325u64;
+        for v in 0..usize::from(crate::archive_profile::HEIGHT) {
+            for u in 0..usize::from(crate::archive_profile::WIDTH) {
+                let x = spec.origin[0] + u * spec.pitch[0];
+                let y = spec.origin[1] + v * spec.pitch[1];
+                if x as f64 + xoff < 0.0
+                    || y as f64 + yoff < 0.0
+                    || x as f64 + xoff >= 1016.0
+                    || y as f64 + yoff >= 445.0
+                {
+                    continue;
+                }
+                for &byte in &argb[y * WIDTH + x].to_be_bytes()[1..] {
+                    signature = (signature ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+                }
+            }
+        }
+        signature
+    }
+
+    #[cfg(goodhand_native_motion)]
+    #[test]
+    fn motion_preserves_sampled_anchors_and_visible_poses_are_unique() {
+        use crate::archive_profile::NATIVE_MOTION_POSES;
+        use std::collections::HashSet;
+        let mut motion = Window::new(
+            null_mut(),
+            Repeat::Once,
+            WindowAppearance::Safe,
+            Cycle::default(),
+        )
+        .unwrap();
+        let custom = Cycle {
+            duration: "12".parse().unwrap(),
+            ..Cycle::default()
+        };
+        let mut reviewed =
+            Window::new(null_mut(), Repeat::Once, WindowAppearance::Safe, custom).unwrap();
+        assert_eq!(
+            motion.renderer.occupied_bounds().unwrap(),
+            ([47, 137], [954, 549])
+        );
+        assert_eq!(motion.canvas().client_at(1.0), (1016, 445));
+        assert_eq!(reviewed.renderer.pose_at_tick(custom, 1), Some(1));
+        let mut signatures = HashSet::new();
+        for tick in 0..NATIVE_MOTION_POSES {
+            motion.update(tick).unwrap();
+            let hash = black_point_signature(&motion.argb, motion.canvas());
+            assert!(
+                signatures.insert(hash),
+                "same visible artwork at tick {tick}"
+            );
+            // Stock W5 anchors land precisely on every fifteenth new sample.
+            if tick % 15 == 0 {
+                reviewed.update(tick * 8 / 15).unwrap();
+                assert_eq!(motion.light, reviewed.light, "raw tone at {tick}");
+                assert_eq!(motion.alpha, reviewed.alpha, "independent alpha at {tick}");
+                assert_eq!(motion.argb, reviewed.argb, "final ARGB at {tick}");
+            }
+        }
+    }
 
     #[test]
     fn default_black_aperture_adds_headroom_without_moving_the_bottom() {
@@ -587,6 +742,38 @@ mod tests {
         state.appearance = WindowAppearance::Clear;
         state.paint();
         assert_eq!(state.argb, clear);
+    }
+
+    #[test]
+    fn dot_palette_matches_dense_paint_and_clears_the_previous_frame() {
+        let spec = RasterSpec::REFERENCE;
+        let mut gray = vec![0; WIDTH * HEIGHT];
+        let mut occupied = vec![0; WIDTH * HEIGHT];
+        let palette = black_grade::palette().map(|rgb| argb(rgb, true));
+        for (x, y, value) in [(0, 0, 0), (1, 2, 51), (198, 117, 13), (199, 119, 240)] {
+            let col = spec.origin[0] + x * spec.pitch[0];
+            let row = spec.origin[1] + y * spec.pitch[1];
+            for dy in 0..spec.dot_size[1] {
+                let start = (row + dy) * WIDTH + col;
+                gray[start..start + spec.dot_size[0]].fill(value);
+                occupied[start..start + spec.dot_size[0]].fill(255);
+            }
+        }
+        let mut output = vec![u32::MAX; WIDTH * HEIGHT];
+        paint_dots(&gray, &occupied, &palette, &mut output);
+        for (i, (&actual, (&gray, &alpha))) in
+            output.iter().zip(gray.iter().zip(&occupied)).enumerate()
+        {
+            let expected = if alpha != 0 {
+                palette[usize::from(gray)]
+            } else {
+                0
+            };
+            assert_eq!(actual, expected, "pixel {i}");
+        }
+        occupied.fill(0);
+        paint_dots(&gray, &occupied, &palette, &mut output);
+        assert!(output.iter().all(|&pixel| pixel == 0));
     }
 
     #[test]
