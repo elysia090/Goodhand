@@ -249,11 +249,15 @@ int32_t goodhand_run_platform(void *context, uint32_t width, uint32_t height,
         [app finishLaunching];
         [window makeFirstResponder:view];
         [window makeKeyAndOrderFront:nil];
-        if (@available(macOS 14.0, *)) {
+        // Resolve the Sonoma activation method through AppKit. The host
+        // is linked by rustc, so do not introduce Clang's separate
+        // deployment-availability runtime for this optional selector.
+        if ([app respondsToSelector:@selector(activate)]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunguarded-availability-new"
             [app activate];
+#pragma clang diagnostic pop
         } else {
-            // This is the foreground activation API on the supported
-            // pre-14 systems, where -activate is not available.
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
             [app activateIgnoringOtherApps:YES];
