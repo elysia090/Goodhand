@@ -1,4 +1,4 @@
-# oops 0.0.2 · playback
+# oops 0.0.3 · playback
 
 ### Island: an independent desktop window
 
@@ -14,15 +14,9 @@ For the reviewed artwork, the default client is 663×290, close to an
 80×24 terminal's visual footprint with the native frame on. The original
 1016×445 aperture is still used for composition, fitted without clipping
 or stretching. The opaque pane is cool near-black (`#0C1012`); the arm
-uses neutral grayscale. The lit form, medium tone and key highlight
-use `#6C6C6C`, `#A0A0A0` and `#E0E0E0`, the colors obtained from
-[Material Design 2's dark theme](https://m2.material.io/design/color/dark-theme.html)
-white foreground opacities (38%, 60%, 87%) on its reference `#121212`.
-These anchors contrast about 3.64:1, 7.31:1 and 14.48:1 against our pane.
-The mapping applies the reference to artwork; this is not an
-accessibility compliance claim, and dark detail has lower contrast.
-A local wrist highlight adjustment follows the reviewed phases without
-changing the silhouette, the pane or the embedded artwork archive.
+uses the unmodified archived grayscale and independent occupancy.
+There is no display-grade curve, backing matte, bearing-tone change
+or wrist correction in the baseline build.
 
 The real window frame and its hit targets are always present. Under
 Xfwm on X11, the opaque pane hides the native decorations visually when
@@ -49,17 +43,12 @@ frame is the same in all three modes.
 `--config`, `--once`, `--duration` and `--direction` apply to Island.
 Terminal framing flags do not.
 
-Current source builds pace the reviewed W5 window's 540 phases evenly
-over a default 45-second turn: 12 distinct artwork phases per second,
-with no frame blending or alternating holds. Use `--duration 30` for
-18 phases per second. The exact cadence is subject to display refresh.
-The shipped v0.0.1 native binaries default to 30 seconds.
-
-The distributable source build samples the same motion archive for
-other durations. W4/W5 developer builds use the motion archive for
-the 30- and 45-second turns, keeping the original archive for other
-durations. The [gray backdrop reference](../../reference/gray-backdrop/)
-is offline and does not change the appearance of Island.
+The baseline window schedules all 288 original phases at equal
+intervals over a default 45-second turn: 6.4 distinct phases per
+second. No phases are interpolated, added or skipped by the schedule.
+Display refresh can quantize presentation. `--duration 22` changes the
+native interval, not the artwork; the offline 22-second proof packages
+the same poses into a 24 fps video instead.
 
 ### Terminal fallback
 
@@ -109,11 +98,9 @@ terminal playback needs external video, Python, or FFmpeg once built.
   30 seconds. On the original 24 Hz timeline, each archived pose starts at the
   nearest tick to its equally spaced time (ties round up), so every
   pose has at least one scheduled tick. A slow terminal may still miss
-  submissions. The reviewed developer window uses the motion archive at
-  30 and 45 seconds and the original archived schedule at other durations. The
-  distributable window uses the motion archive at every duration. The
-  procedural terminal developer scene samples the corresponding yaw on
-  each tick.
+  submissions. The v0.0.3 baseline window plays all 288 original
+  positions at each supported duration. The procedural terminal
+  developer scene samples the corresponding yaw on each tick.
 - `--direction reverse` (the default) follows the reviewed order.
   `--direction forward` uses the same opening pose and visits the other
   phases in reverse order, on the same timeline. It does not
@@ -217,23 +204,35 @@ the build. With a GTK3 desktop:
     GOODHAND_PLAYBACK_DIR=/absolute/path/to/verified-data \
       cargo build --offline --release --locked --features desktop-window
 
-Omit `--features desktop-window` for a terminal-only build. To reproduce
-the current reviewed black-canvas art, use the W5 inputs and switch below.
-This project does not distribute the required W4 pair or a desktop binary.
+Omit `--features desktop-window` for a terminal-only build. The baseline
+window build uses the exact archive selected below, not a terminal
+fixture or a private W4 input.
 
     cargo test --offline --locked
     cargo clippy --offline --locked --all-targets -- -D warnings
     cargo build --offline --release --locked
     python3 tests/pty_smoke.py target/release/oops --full
 
-### Distribution build
+### Native baseline build
 
-The distributable desktop app needs only the separately cleared final
-540-phase artwork, not the W4 review or authoring material. Follow the
-[release checklist](release/README.md). Do not build a downloadable
-package from the developer inputs.
+From a full Git checkout, pack the exact historical artwork using
+Python with NumPy. Use an absolute output path outside the checkout
+and do not store or upload the generated pair separately.
 
-### W5 developer build
+```sh
+artwork=/absolute/path/to/new-private-directory
+python tools/oops/release/prepare_baseline.py \
+  reference/source-study/pixels.npz "$artwork"
+GOODHAND_BASELINE_ARTWORK_DIR="$artwork" \
+  cargo build --manifest-path tools/oops/Cargo.toml --offline --release --locked --features desktop-window
+```
+
+In this build the baseline is the default native artwork; there is no
+runtime artwork selector. Python and the artwork files are not needed
+at runtime. See the [release checklist](release/README.md) for the
+separate artwork notice and distribution checks.
+
+### Historical W5 developer build
 
 W5 groups the upper forearm return into a quieter dark plane and gives
 the lower bearing plane more weight. It is a build-time opt-in layered on
@@ -284,10 +283,11 @@ asset, checksum utility, or source dependency at runtime.
 
 ### Verification
 
-The desktop-feature tests exercise raster coverage, opaque black,
-interior matte containment and resize fit without a desktop session.
-With the verified W5 inputs, they also check every 18 Hz phase, the
-30-second wrap, and exact agreement at coincident reviewed phases.
+The desktop-feature tests exercise raster coverage, pane compositing
+and resize fit without a desktop session. The exact baseline build
+tests all 288 distinct rasters, 45-second boundaries in both
+directions, and pass-through of occupied gray and coverage. Historical
+W5 desktop inputs retain their separate tests.
 The shared archive tests check the original terminal hold schedule.
 Kernel PTY checks separately exercise terminal geometry, deadlines and
 teardown. Those checks do not establish compositor behavior, refresh,

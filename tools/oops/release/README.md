@@ -1,30 +1,24 @@
-# oops 0.0.2 release checklist
+# oops 0.0.3 release checklist
 
-Build Windows x64 and Linux x64 packages for this release. Both use a
-compact native pane (663×290 logical client for the reviewed artwork)
-and schedule the same 540 phases over one 45-second turn. The reviewed
-wrist tone is applied by default in the opaque pane. GTK 3 also supports
-its two existing translucent appearances. The Win32 and AppKit ports
-use the native frame and the opaque artwork.
-
-Both ARM64 downloads are out of scope for v0.0.2, and macOS downloads
-remain on hold for both Intel and Apple silicon. Preserve the published
-v0.0.1 tag and its packages. Do not publish only one of the two v0.0.2
-packages.
+Build and verify Windows x64 and Linux x64 together. macOS stays on
+hold; ARM64 downloads are out of scope. Preserve existing tags and
+packages. The default 663×290 native client plays the exact historical
+288-pose grayscale artwork over 45 seconds on the `#0C1012` pane.
+No later arm correction or interpolation is applied.
 
 ## Distribution boundary
 
-The software is MIT. Confirm permission for the exact final
-540-phase shape and tone files, including extraction from the executable.
-Keep the record of permission separately from the release. Prepare the
-authorized artwork notice to include in the archive. A development-only
-grant does not authorize a binary release.
+The software is MIT. The separate artwork grant must cover the exact
+288-phase baseline pair, including extraction from the executable.
+Include [the separate artwork notice](ARTWORK-BASELINE.txt) with each
+package. Do not attach raw art inputs, source footage, guides or a
+private review archive. Published W5 package permission is separate.
 
-The distribution build embeds only the final artwork pair. It refuses
-`GOODHAND_PLAYBACK_DIR`, `GOODHAND_TONE_PROFILE` and
-`GOODHAND_NATIVE_MOTION_DIR` in this mode, and validates the final pair
-against the reviewed format and digests. Never transfer a private seed,
-guide, source movie, intermediate asset or fixture to a release runner.
+The exact previously archived source snapshot can be read from a full
+checkout. Tag source ZIP/tar downloads use `export-ignore` to exclude
+both historical artwork datasets; verify the tag's generated archives
+before publishing. The only new artwork bytes sent outside the build
+runner must be inside the finished executable.
 
 ## Build on the target architecture
 
@@ -47,38 +41,37 @@ matching architecture's Visual Studio Developer shell. For the digest
 check, make GNU `sha256sum` available (Git for Windows supplies it);
 macOS uses system `shasum -a 256`.
 
-Set `GOODHAND_RELEASE_ARTWORK_DIR` to the absolute directory holding
-verified `shape.ghs` and `tone.ght`. Leave the three developer variables
-unset. Set a new clean `CARGO_TARGET_DIR` and remap absolute source
-paths with rustc's `--remap-path-prefix` so packages do not expose local
-build directories. Then run on each host:
+Prepare the exact archive from the full checkout with Python and NumPy,
+then set `GOODHAND_BASELINE_ARTWORK_DIR` to its absolute directory.
+Do not set the historical W4/W5 build variables. Remap builder-specific
+paths and use a fresh target directory. On each target host:
 
 ```sh
+artwork=/absolute/path/to/new-private-directory
+python tools/oops/release/prepare_baseline.py \
+  reference/source-study/pixels.npz "$artwork"
+export GOODHAND_BASELINE_ARTWORK_DIR="$artwork"
 cargo +1.100.0 test --manifest-path tools/oops/Cargo.toml --locked --offline --release --features desktop-window
 cargo +1.100.0 build --manifest-path tools/oops/Cargo.toml --locked --offline --release --features desktop-window
 ```
 
-The synthetic desktop CI workflow never ingests private assets or
-publishes binaries. Passing it is only a build gate.
+Synthetic desktop CI never ingests private inputs or publishes
+binaries. Passing it is a build gate, not desktop verification.
 
 ## Windows x64 release build in Actions
 
-Manually run **Windows x64 release build** on `release/oops-v0.0.2`
-before merge with its exact source commit SHA. Run it again on `main`
-after merge if its release commit differs. The job fetches the existing v0.0.1
-Linux x64 archive and verifies its pinned archive and executable SHA-256.
-The final approved 540-phase artwork bytes have not changed. This uses
-no draft release credentials and publishes no release.
+Manually run **Windows x64 release build** on `release/oops-v0.0.3` or
+`main` with the exact source commit SHA. Enable
+`artwork_scope_confirmed` only after distribution approval has been
+recorded. The job reads the pinned archive already in source history,
+packs it only on the runner, and uploads just the finished Windows
+archive and its SHA-256. It uses read-only permissions and does not
+publish or change releases.
 
-The job extracts only that approved pair and its notice inside the
-ephemeral runner, builds with MSVC and packages the real Windows ZIP
-and checksum. Neither artwork input goes into the CI artifact. Confirm
-the source SHA and the archive checksum from Actions. Desktop behavior
-is separate from the CLI and build checks. Do not merge or ship until
-the artifact's window controls and playback have been tested interactively on
-Windows 11 x64. Run the hover and keyboard checks on the packaged build
-with the pointer away at rest, after minimize/restore and on mixed-DPI
-monitors. Also check accessibility focus and the contrast-theme fallback.
+Check the artifact's source SHA and both checksums. Build and CLI
+checks do not establish real Windows hover behavior. Record the
+interactive results separately; distinguish tested and unverified
+environments in release notes.
 
 ## Verify and package
 
@@ -88,7 +81,7 @@ monitors. Also check accessibility focus and the contrast-theme fallback.
    against the reviewed Linux bitmap. Verify that the real native chrome
    blends at rest, reveals on hover and remains accessible by keyboard,
    without a geometry jump. Check OS-native fallback separately. On a
-   normal desktop, check 540 phases in order and a seamless wrap; if the compositor
+   normal desktop, check all 288 phases in order and a seamless wrap; if the compositor
    drops a phase, note the observation instead of certifying cadence
    solely from a compressed recording or automated build.
 2. On macOS create `oops.app/Contents/MacOS/oops` from the executable
@@ -107,7 +100,7 @@ monitors. Also check accessibility focus and the contrast-theme fallback.
 python3 tools/oops/release/package.py \
   --executable /path/to/oops \
   --artwork /path/to/cleared-final-pair \
-  --artwork-notice /path/to/authorized-artwork-notice.txt \
+  --artwork-notice tools/oops/release/ARTWORK-BASELINE.txt \
   --output /path/to/new-package-directory
 ```
 

@@ -1,9 +1,9 @@
-oops 0.0.2
+oops 0.0.3
 
-A rotating hand in a compact native window. The default turn lasts
-45 seconds, with 540 artwork phases scheduled evenly at 12 per second.
-Your display may miss frames under load. Use --duration 30 to play the
-same turn at 18 phases per second.
+The original grayscale hand rotates in a compact native window on a
+cool near-black background. The default turn takes 45 seconds and uses
+all 288 original artwork phases. There is no added arm grading or
+interpolation. Use --duration 22 for a faster turn.
 
 Windows: extract the x64 ZIP and open oops.exe.
 Linux: extract the x64 archive and open oops (or run ./oops).

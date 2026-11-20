@@ -188,7 +188,11 @@ impl Artwork {
             alpha: vec![0; WIDTH * HEIGHT],
             argb: vec![0; WIDTH * HEIGHT],
             matte: InteriorMatte::new(),
-            foreground: black_grade::palette().map(|rgb| argb(rgb, true)),
+            foreground: if cfg!(goodhand_baseline_artwork) {
+                std::array::from_fn(|gray| argb([gray as u8; 3], true))
+            } else {
+                black_grade::palette().map(|rgb| argb(rgb, true))
+            },
             timeline: Timeline { cycle, repeat },
             pose: 0,
             #[cfg(goodhand_native_motion)]
@@ -239,6 +243,11 @@ impl Artwork {
 
     fn paint(&mut self) {
         paint_dots(&self.light, &self.alpha, &self.foreground, &mut self.argb);
+        if cfg!(goodhand_baseline_artwork) {
+            // Archived support and tone are the whole image. Do not add
+            // support shading, a display curve, or a local wrist grade.
+            return;
+        }
         if self.appearance == WindowAppearance::Safe {
             // Only dots color the opaque pane. Keep the depth measurement for
             // the approved bearing tone, without adding a second backdrop.
@@ -469,7 +478,7 @@ mod tests {
         assert_eq!(motion_pose_at_tick(twelve, 216), None);
     }
 
-    #[cfg(goodhand_native_motion)]
+    #[cfg(any(goodhand_native_motion, goodhand_baseline_artwork))]
     fn black_point_signature(argb: &[u32], canvas: Canvas) -> u64 {
         let spec = RasterSpec::REFERENCE;
         let view = Placement::new(canvas, 1016, 445);
@@ -531,6 +540,92 @@ mod tests {
                 assert_eq!(motion.alpha, reviewed.alpha, "independent alpha at {tick}");
                 assert_eq!(motion.argb, reviewed.argb, "final ARGB at {tick}");
             }
+        }
+    }
+
+    #[cfg(goodhand_baseline_artwork)]
+    #[test]
+    fn baseline_native_uses_exact_gray_coverage_and_all_288_uniform_phases() {
+        use crate::archive_profile::POSES;
+        use crate::playback::{CycleDuration, Direction};
+        use std::collections::HashSet;
+        let cycle = Cycle {
+            duration: CycleDuration::WINDOW_DEFAULT,
+            ..Cycle::default()
+        };
+        let mut artwork = Artwork::new(Repeat::Once, WindowAppearance::Safe, cycle).unwrap();
+        let timeline = artwork.timeline;
+        assert_eq!(
+            artwork.renderer.occupied_bounds().unwrap(),
+            ([47, 137], [954, 549])
+        );
+        assert_eq!(artwork.canvas().compact(), (663, 290));
+        let mut known = HashSet::new();
+        for pose in 0..POSES {
+            let time = Duration::from_nanos(u64::from(pose) * 156_250_000);
+            assert_eq!(
+                artwork.renderer.tick_for(timeline, time),
+                Some(u64::from(pose))
+            );
+            if pose > 0 {
+                assert_eq!(
+                    artwork
+                        .renderer
+                        .tick_for(timeline, time - Duration::from_nanos(1)),
+                    Some(u64::from(pose - 1))
+                );
+            }
+            assert_eq!(
+                artwork.renderer.pose_at_tick(cycle, u64::from(pose)),
+                Some(pose)
+            );
+            let forward = Cycle {
+                direction: Direction::Forward,
+                ..cycle
+            };
+            assert_eq!(
+                artwork.renderer.pose_at_tick(forward, u64::from(pose)),
+                Some((POSES - pose) % POSES)
+            );
+            artwork.update(pose).unwrap();
+            assert!(known.insert(black_point_signature(&artwork.argb, artwork.canvas())));
+            assert!(
+                artwork
+                    .argb
+                    .iter()
+                    .zip(artwork.light.iter().zip(&artwork.alpha))
+                    .all(|(&actual, (&gray, &alpha))| {
+                        actual == if alpha == 0 { 0 } else { argb([gray; 3], true) }
+                    })
+            );
+        }
+        assert_eq!(
+            artwork.renderer.tick_for(timeline, Duration::from_secs(45)),
+            None
+        );
+        let looping = Timeline {
+            repeat: Repeat::Loop,
+            ..timeline
+        };
+        assert_eq!(
+            artwork.renderer.tick_for(looping, Duration::from_secs(45)),
+            Some(0)
+        );
+        for seconds in [12, 22, 30, 60] {
+            let cycle = Cycle {
+                duration: seconds.to_string().parse().unwrap(),
+                ..cycle
+            };
+            let timeline = Timeline {
+                cycle,
+                repeat: Repeat::Once,
+            };
+            let last = cycle.length() - Duration::from_nanos(1);
+            assert_eq!(
+                artwork.renderer.tick_for(timeline, last),
+                Some(u64::from(POSES - 1))
+            );
+            assert_eq!(artwork.renderer.tick_for(timeline, cycle.length()), None);
         }
     }
 
@@ -706,11 +801,11 @@ mod tests {
         assert_eq!((local.scale, local.origin), (1.0, (0, 0)));
         assert!(state.alpha.contains(&0));
         assert!(state.alpha.contains(&255));
-        let palette = black_grade::palette();
+        let palette = state.foreground;
         for ((&pixel, &gray), &alpha) in state.argb.iter().zip(&state.light).zip(&state.alpha) {
             assert!(alpha == 0 || alpha == 255);
             if alpha != 0 {
-                assert_eq!(pixel, argb(palette[usize::from(gray)], true));
+                assert_eq!(pixel, palette[usize::from(gray)]);
             } else {
                 // Compositing over black is identical to the original image.
                 assert_eq!(pixel & 0xff_ff_ff, 0);

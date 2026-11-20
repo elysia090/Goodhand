@@ -4,22 +4,27 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Exact source commit SHA to build for v0.0.2
+        description: Exact source commit SHA to build for v0.0.3
         type: string
         required: true
+      artwork_scope_confirmed:
+        description: Exact embedded baseline artwork distribution was approved
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-release-v0.0.2
+  group: windows-release-v0.0.3
   cancel-in-progress: false
 
 jobs:
   build:
     if: >-
-      github.repository == 'elysia090/Goodhand' &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release/oops-v0.0.2')
+      github.repository == 'elysia090/Goodhand' && inputs.artwork_scope_confirmed &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release/oops-v0.0.3')
     runs-on: windows-2025
     timeout-minutes: 20
     env:
@@ -54,28 +59,24 @@ jobs:
             /LICENSE
             /src/
             /tools/oops/
+            /tools/gray_source.py
+            /tools/pack_sequence.py
+            /tools/pack_tone.py
+            /reference/source-study/pixels.npz
+            /reference/source-study/pixels.json
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
-      - name: Retrieve the existing release's artwork carrier
+      - name: Verify and pack the exact archived baseline
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path "$env:GOODHAND_INPUT_DIR" | Out-Null
-          $archive = Join-Path "$env:GOODHAND_INPUT_DIR" "oops-v0.0.1-linux-x64.tar.gz"
-          $url = "https://github.com/elysia090/Goodhand/releases/download/v0.0.1/oops-v0.0.1-linux-x64.tar.gz"
-          curl.exe --fail --silent --show-error --location --proto '=https' --proto-redir '=https' `
-              --connect-timeout 10 --max-time 60 --max-filesize 16777216 `
-              --output "$archive" "$url"
-          if ($LASTEXITCODE) { throw "Could not download the existing approved archive" }
-
-      - name: Verify and stage approved embedded artwork
-        shell: pwsh
-        run: |
+          python -m pip install --disable-pip-version-check numpy==2.3.5
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python -m unittest discover -s tools/oops/release -p "test_*.py"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          python tools/oops/release/extract_linux_artwork.py `
-              "$env:GOODHAND_INPUT_DIR/oops-v0.0.1-linux-x64.tar.gz" "$env:GOODHAND_INPUT_DIR/artwork"
+          New-Item -ItemType Directory -Path "$env:GOODHAND_INPUT_DIR" | Out-Null
+          python tools/oops/release/prepare_baseline.py reference/source-study/pixels.npz "$env:GOODHAND_INPUT_DIR/artwork"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Build and test the Windows x64 executable
@@ -93,7 +94,7 @@ jobs:
           }
           rustup toolchain install "$env:TOOLCHAIN" --profile minimal
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $env:GOODHAND_RELEASE_ARTWORK_DIR = "$env:GOODHAND_INPUT_DIR/artwork"
+          $env:GOODHAND_BASELINE_ARTWORK_DIR = "$env:GOODHAND_INPUT_DIR/artwork"
           $env:CARGO_TARGET_DIR = $env:GOODHAND_BUILD_DIR
           $env:CARGO_ENCODED_RUSTFLAGS = "--remap-path-prefix=$env:GITHUB_WORKSPACE=Goodhand" +
               [char]31 + "-C" + [char]31 + "target-feature=+crt-static"
@@ -115,7 +116,7 @@ jobs:
           python tools/oops/release/package.py --ci-cli-only `
               --executable "$env:GOODHAND_BUILD_DIR/release/oops.exe" `
               --artwork "$env:GOODHAND_INPUT_DIR/artwork" `
-              --artwork-notice "$env:GOODHAND_INPUT_DIR/artwork/ARTWORK-LICENSE.txt" `
+              --artwork-notice tools/oops/release/ARTWORK-BASELINE.txt `
               --output "$env:GOODHAND_PACKAGE_DIR"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           "Source commit: $env:GITHUB_SHA" >> $env:GITHUB_STEP_SUMMARY
@@ -134,9 +135,9 @@ jobs:
       - name: Upload only the Windows archive and checksum
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: oops-v0.0.2-windows-x64
+          name: oops-v0.0.3-windows-x64
           path: |
-            ${{ env.GOODHAND_PACKAGE_DIR }}/oops-v0.0.2-windows-x64.zip
-            ${{ env.GOODHAND_PACKAGE_DIR }}/oops-v0.0.2-windows-x64.zip.sha256
+            ${{ env.GOODHAND_PACKAGE_DIR }}/oops-v0.0.3-windows-x64.zip
+            ${{ env.GOODHAND_PACKAGE_DIR }}/oops-v0.0.3-windows-x64.zip.sha256
           if-no-files-found: error
           retention-days: 3

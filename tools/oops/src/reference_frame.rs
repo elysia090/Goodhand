@@ -4,15 +4,24 @@ use crate::archived_scene::Archive;
 use goodhand::{RasterSpec, write_surface};
 use std::io;
 
-#[cfg(goodhand_native_motion)]
+#[cfg(any(goodhand_native_motion, goodhand_baseline_artwork))]
 struct MotionArchive(goodhand::Sequence<'static>, goodhand::ToneSequence<'static>);
 
-#[cfg(goodhand_native_motion)]
+#[cfg(any(goodhand_native_motion, goodhand_baseline_artwork))]
 impl MotionArchive {
+    #[cfg(goodhand_native_motion)]
     fn embedded() -> io::Result<Self> {
         let shape = include_bytes!(concat!(env!("OUT_DIR"), "/native-motion-shape.ghs"));
         let tone = include_bytes!(concat!(env!("OUT_DIR"), "/native-motion-tone.ght"));
         let (shape, tone) = crate::archive_profile::validate_native_motion(shape, tone)?;
+        Ok(Self(shape, tone))
+    }
+
+    #[cfg(goodhand_baseline_artwork)]
+    fn baseline() -> io::Result<Self> {
+        let shape = include_bytes!(concat!(env!("OUT_DIR"), "/baseline-shape.ghs"));
+        let tone = include_bytes!(concat!(env!("OUT_DIR"), "/baseline-tone.ght"));
+        let (shape, tone) = crate::archive_profile::validate(shape, tone)?;
         Ok(Self(shape, tone))
     }
 
@@ -31,6 +40,8 @@ enum Artwork {
     Review(Archive),
     #[cfg(goodhand_native_motion)]
     Motion(MotionArchive),
+    #[cfg(goodhand_baseline_artwork)]
+    Baseline(MotionArchive),
 }
 
 pub(crate) struct ReferenceFrame {
@@ -45,6 +56,19 @@ impl ReferenceFrame {
         // default and the original 30-second reviewed turn.
         #[cfg(not(goodhand_native_motion))]
         let _ = cycle;
+        #[cfg(goodhand_baseline_artwork)]
+        {
+            let out = Self {
+                art: Artwork::Baseline(MotionArchive::baseline()?),
+                opaque: Vec::new(),
+            };
+            if out.occupied_bounds()? != ([47, 137], [954, 549]) {
+                return Err(io::Error::other(
+                    "baseline artwork changes the established aperture",
+                ));
+            }
+            Ok(out)
+        }
         #[cfg(goodhand_native_motion)]
         if cfg!(goodhand_release_artwork)
             || cycle.duration == crate::playback::CycleDuration::WINDOW_DEFAULT
@@ -90,6 +114,8 @@ impl ReferenceFrame {
         match &self.art {
             #[cfg(goodhand_native_motion)]
             Artwork::Motion(_) => motion_tick(timeline, elapsed),
+            #[cfg(goodhand_baseline_artwork)]
+            Artwork::Baseline(_) => phase_tick(timeline, elapsed, BASELINE_POSES),
             #[cfg(goodhand_embedded_playback)]
             Artwork::Review(_) => timeline.sample(elapsed).map(|slot| slot.phase.tick),
         }
@@ -99,6 +125,8 @@ impl ReferenceFrame {
         match &self.art {
             #[cfg(goodhand_native_motion)]
             Artwork::Motion(_) => motion_pose_at_tick(cycle, tick),
+            #[cfg(goodhand_baseline_artwork)]
+            Artwork::Baseline(_) => directed_pose(cycle, tick, BASELINE_POSES),
             #[cfg(goodhand_embedded_playback)]
             Artwork::Review(_) => crate::archived_scene::pose_at_tick(cycle, tick),
         }
@@ -112,6 +140,10 @@ impl ReferenceFrame {
                 occupied_bounds(crate::archive_profile::NATIVE_MOTION_POSES, |pose| {
                     motion.frame(pose)
                 })
+            }
+            #[cfg(goodhand_baseline_artwork)]
+            Artwork::Baseline(baseline) => {
+                occupied_bounds(crate::archive_profile::POSES, |pose| baseline.frame(pose))
             }
             #[cfg(goodhand_embedded_playback)]
             Artwork::Review(review) => {
@@ -131,6 +163,11 @@ impl ReferenceFrame {
             Artwork::Motion(motion) => {
                 // Final W5 point tones, not another application of the anchor grade.
                 let (shape, gray) = motion.frame(pose)?;
+                write_raster(shape, gray, &mut self.opaque, pixels, alpha)
+            }
+            #[cfg(goodhand_baseline_artwork)]
+            Artwork::Baseline(baseline) => {
+                let (shape, gray) = baseline.frame(pose)?;
                 write_raster(shape, gray, &mut self.opaque, pixels, alpha)
             }
             #[cfg(goodhand_embedded_playback)]
@@ -157,25 +194,43 @@ fn motion_slots(cycle: crate::playback::Cycle) -> u64 {
 #[cfg(any(goodhand_native_motion, test))]
 pub(super) fn motion_pose_at_tick(cycle: crate::playback::Cycle, tick: u64) -> Option<u32> {
     use crate::archive_profile::NATIVE_MOTION_POSES;
-    use crate::playback::Direction;
-
     let ticks = motion_slots(cycle);
     if tick >= ticks {
         return None;
     }
-    // Forward uses the same archive lattice in reverse order.
     let total = u64::from(NATIVE_MOTION_POSES);
-    let pose = tick * total / ticks;
-    Some(match cycle.direction {
-        Direction::Reverse => pose as u32,
-        Direction::Forward => ((total - pose) % total) as u32,
-    })
+    directed_pose(cycle, tick * total / ticks, total)
 }
 
 #[cfg(any(goodhand_native_motion, test))]
 pub(super) fn motion_tick(
     timeline: crate::playback::Timeline,
     elapsed: std::time::Duration,
+) -> Option<u64> {
+    phase_tick(timeline, elapsed, motion_slots(timeline.cycle))
+}
+
+#[cfg(goodhand_baseline_artwork)]
+const BASELINE_POSES: u64 = crate::archive_profile::POSES as u64;
+
+#[cfg(any(goodhand_native_motion, goodhand_baseline_artwork, test))]
+fn directed_pose(cycle: crate::playback::Cycle, phase: u64, total: u64) -> Option<u32> {
+    use crate::playback::Direction;
+    if phase >= total {
+        return None;
+    }
+    // Both directions begin on the unchanged opening pose.
+    Some(match cycle.direction {
+        Direction::Reverse => phase as u32,
+        Direction::Forward => ((total - phase) % total) as u32,
+    })
+}
+
+#[cfg(any(goodhand_native_motion, goodhand_baseline_artwork, test))]
+fn phase_tick(
+    timeline: crate::playback::Timeline,
+    elapsed: std::time::Duration,
+    slots: u64,
 ) -> Option<u64> {
     use crate::playback::Repeat;
 
@@ -188,7 +243,7 @@ pub(super) fn motion_tick(
     const NANOSECOND_SCALE: u64 = 1_000_000_000;
     let within =
         (elapsed.as_secs() % seconds) * NANOSECOND_SCALE + u64::from(elapsed.subsec_nanos());
-    Some(within * motion_slots(timeline.cycle) / (seconds * NANOSECOND_SCALE))
+    Some(within * slots / (seconds * NANOSECOND_SCALE))
 }
 
 fn occupied_bounds(

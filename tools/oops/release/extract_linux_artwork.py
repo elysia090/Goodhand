@@ -1,4 +1,4 @@
-"""Stage the reviewed final artwork inside the Windows release job."""
+"""Recover the pinned historical W5 artwork from v0.0.1; not a v0.0.3 input."""
 
 import argparse
 import hashlib
@@ -7,7 +7,10 @@ import struct
 import tarfile
 from pathlib import Path
 
-from package import MOTION_DIGESTS
+LEGACY_MOTION_DIGESTS = {
+    "shape.ghs": "e44b22610dd3a02024181fd1b856cc1e33c15f13821e72ddda5d24784dffa6ff",
+    "tone.ght": "52e71a2731a14902ba2bb8db25d141f4f619aa6b7b584eb2be1e47c9550f46e0",
+}
 
 # The existing v0.0.1 Linux x64 binary carries the same approved artwork.
 ARCHIVE_SHA256 = "378c1e3830a17b821755e2bf5079077346376782c88cc7f004ad025dc479fd31"
@@ -65,7 +68,7 @@ def prepare(source, output):
         notice = exact_member(tar, "ARTWORK-LICENSE.txt", 16384)
     if digest(blob) != EXECUTABLE_SHA256:
         raise ValueError("Linux executable does not match the approved SHA-256")
-    verified = {name: extract_input(blob, magic, MOTION_DIGESTS[name])
+    verified = {name: extract_input(blob, magic, LEGACY_MOTION_DIGESTS[name])
                 for magic, name in INPUTS.items()}
     output.mkdir(mode=0o700)
     for name, data in verified.items():

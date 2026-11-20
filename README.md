@@ -1,10 +1,10 @@
 # Goodhand
 
-**oops** is a rotating hand in its own window. In v0.0.2 the compact
-window defaults to a 45-second turn with 540 distinct artwork phases.
-The neutral artwork and native window frame keep the focus on the hand.
+**oops** is a rotating hand in its own window. The v0.0.3 source plays
+the original 288-pose grayscale artwork on the cool near-black pane,
+without later arm corrections. One turn takes 45 seconds by default.
 
-[![Source version: v0.0.2](https://img.shields.io/badge/source-v0.0.2-lightgrey?style=flat)](https://github.com/elysia090/Goodhand/releases)
+[![Source version: v0.0.3](https://img.shields.io/badge/source-v0.0.3-lightgrey?style=flat)](https://github.com/elysia090/Goodhand/releases)
 [![Playback: 45 s per turn](https://img.shields.io/badge/playback-45%20s%20per%20turn-blue?style=flat)](#open-oops)
 [![Chip targets: x64 and ARM64](https://img.shields.io/badge/targets-x64%20%7C%20ARM64-informational?style=flat)](#downloads)
 [![Software license: MIT](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
@@ -41,23 +41,20 @@ for native verification and signing.
 3. Resize the window to fit. Close it, or press **q** or **Esc**, to stop.
 
 To play one 45-second turn and exit, run `./oops --once` on Linux or
-`.\oops.exe --once` in PowerShell on Windows. Add `--duration 30` to
-use the earlier 30-second pace. The 540 phases are scheduled at 12 per
-second by default or 18 per second for the 30-second turn.
+`.\oops.exe --once` in PowerShell on Windows. Use `--duration 22` for
+a faster turn. The v0.0.3 build schedules its 288 original poses
+at 6.4 per second by default; v0.0.2 uses a different 540-pose archive.
 
 The app does not need a terminal to play, a video player, or a network
 connection. A busy desktop compositor can skip displayed frames.
 
 ## Develop
 
-This repository contains a Rust library for shape, point tones, timing and
-placement; the `oops` player; and offline tooling. A clean checkout does
-not contain the reviewed release artwork. The Linux x64 terminal developer
-preview is separate from the reviewed native artwork.
-
-The compact dark pane uses Material dark-theme foreground references
-and a localized wrist tone adjustment, without changing the artwork
-archive. The original v0.0.1 release remains available.
+This repository contains a Rust library for shape, point tones, timing
+and placement; the `oops` player; and offline tooling. The full Git
+checkout contains the historical baseline snapshot. The generated tag
+source ZIP and tarball omit artwork data. The Linux x64 terminal
+developer preview is separate from the native artwork.
 
 - [Build and playback options](tools/oops/README.md)
 - [Library, development checks and offline workflow](docs/development.md)
