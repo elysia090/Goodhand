@@ -3,7 +3,9 @@ use std::io;
 
 pub const WIDTH: u16 = 200;
 pub const HEIGHT: u16 = 120;
+#[allow(dead_code)]
 pub const POSES: u32 = 288;
+#[allow(dead_code)]
 pub const ARCHIVE_FPS: u16 = 24;
 #[allow(dead_code)]
 pub const NATIVE_MOTION_POSES: u32 = NATIVE_MOTION_FPS as u32 * NATIVE_MOTION_SECONDS as u32;
@@ -13,6 +15,7 @@ pub const NATIVE_MOTION_SECONDS: u8 = 30;
 #[allow(dead_code)]
 pub const NATIVE_MOTION_FPS: u16 = 18;
 
+#[allow(dead_code)]
 pub fn validate<'a>(
     shape_bytes: &'a [u8],
     tone_bytes: &'a [u8],

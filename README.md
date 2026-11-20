@@ -1,118 +1,53 @@
 # Goodhand
 
-A small Rust library and playback pilot for a rotating hand artwork.
-Shape, tone, timing, and display placement have separate contracts.
-Offline Python tools prepare and inspect data; they are not runtime dependencies.
-The [visual baseline](reference/visual-baseline/) is the approved appearance
-for comparison. The [source study](reference/source-study/) preserves the
-earlier authored gray and the independent occupancy shared by both snapshots.
-They are offline references, not runtime inputs. Source imagery is not included.
+**oops** is a rotating hand in its own window. A turn takes 30 seconds,
+with 540 distinct artwork phases at 18 fps. The black canvas preserves the
+original point grid and the familiar window frame belongs to your desktop.
 
-The packaged player uses embedded fixed-grid artwork. The reviewed W5
-desktop build plays its 30-second turn at 18 distinct artwork phases per
-second. The source-only developer build instead renders the generative model.
-Neither reads the offline reference files at runtime. See the
-[design and quality gates](DESIGN.md) and the [tone input contract](docs/tone.md).
+**v0.0.1** · **18 fps** · **MIT software**
 
-## Library
+## Download
 
-- `frame.rs`: borrowed occupancy rows/runs and caller-buffer mask expansion.
-- `sequence.rs`: validated shape sequence and absolute-time frame selection.
-- `tone.rs`: independently validated occupied-order gray8 values.
-- `surface.rs`: fixed pixel placement, without terminal cells or I/O.
+The v0.0.1 packages are being prepared. There are no v0.0.1 binaries to
+download yet. Once verified and published, find them under
+[Releases](https://github.com/elysia090/Goodhand/releases).
 
-```rust
-let shape = goodhand::Sequence::from_bytes(&shape_bytes)?;
-let tones = goodhand::ToneSequence::from_bytes(&tone_bytes, shape)?;
-let spec = goodhand::RasterSpec::REFERENCE;
-let mut pixels = vec![0u8; spec.required_len()?];
-let f = shape.frame_index_at(elapsed);
-goodhand::write_surface(shape.frame(f).unwrap(), tones.frame(f).unwrap(), spec, &mut pixels)?;
-```
+| Desktop | x64 · 64-bit Intel / AMD | ARM64 · 64-bit Arm |
+| --- | --- | --- |
+| Windows | `oops-v0.0.1-windows-x64.zip` | `oops-v0.0.1-windows-arm64.zip` |
+| Linux | `oops-v0.0.1-linux-x64.tar.gz` | `oops-v0.0.1-linux-arm64.tar.gz` |
+| macOS | `oops-v0.0.1-macos-x64.zip` · Intel Mac | `oops-v0.0.1-macos-arm64.zip` · Apple silicon |
 
-Readers validate the complete asset before exposing frames. Parsing and borrowed
-row iteration do not allocate. `write_mask` writes only the required prefix and
-leaves a short buffer unchanged. `write_surface` validates before writing,
-reuses the caller's allocation, clears the required canvas, and preserves any
-unused tail. An occupied black value is not background occupancy.
+The table names the planned artifacts; it does not claim verification on
+every host. Desktop builds target GTK 3 on GNU/Linux, Win32 on Windows,
+and AppKit on macOS. See the [release checklist](tools/oops/release/README.md)
+for the verification and signing required per platform.
 
-## Generative model
+## Open oops
 
-`src/arm_model.rs` samples the same continuous arm shape at a chosen
-yaw and physical sample aspect. It writes separate occupancy and gray
-to caller-owned buffers, with no frame data or video input. The new
-model is an approximation of the visual baseline, not a reconstruction
-of its underlying geometry. See the [base and attr design](docs/generative-base.md).
+- **Windows:** extract the ZIP and open `oops.exe`.
+- **Linux:** extract the archive and open `oops`, or run `./oops`. A GTK 3
+  desktop runtime is required.
+- **macOS:** extract the ZIP and open `oops.app`.
 
-## Playback
+Close the window, press **q** or **Esc**, or use `--once` for one turn.
+Resize to fit without stretching. The desktop app needs no terminal,
+video player, Python or network connection. The display and compositor may
+miss a frame under load.
 
-On the Linux GTK3 desktop build, run `oops` from a normal shell to open
-**Island**, a separate Goodhand window with a black background by default.
-The desktop provides the title bar, window buttons, and resize handles.
-The reviewed W5 build uses the same native canvas at 18 artwork frames per
-second for the default 30-second turn. Press t on a composited desktop to
-switch between black, lightly tinted, and clear backgrounds. The app never
-reads the desktop. Press q or Esc to close; successful playback adds no
-shell output.
+## Develop
 
-The source-only build has no embedded review archive. Use
-`oops --terminal` for the procedural terminal view; `--alternate-buffer`
-is an optional terminal change, not Island. See the [playback guide](tools/oops/README.md)
-for supported builds and terminal settings. The [gray backdrop](reference/gray-backdrop/)
-is an offline visual reference, not a runtime mode.
+This repository contains a Rust library for shape, point tones, timing and
+placement; the `oops` player; and offline tooling. A clean checkout does
+not contain the reviewed release artwork. The Linux x64 terminal developer
+preview is separate from the released native artwork.
 
-## Checks
+- [Build and playback options](tools/oops/README.md)
+- [Library, development checks and offline workflow](docs/development.md)
+- [Design and quality gates](DESIGN.md)
 
-```sh
-cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-cargo test --locked --release
-cargo build --locked --release --lib
-# Requires the installed target:
-cargo build --locked --release --lib --target wasm32-unknown-unknown
-# Offline tools require Python 3, NumPy, and Pillow:
-python3 -m unittest discover -s tools -p 'test_*.py' -v
-```
+## License
 
-CI separates synthetic Python tests, Rust 1.100 quality/build checks, and Rust
-1.70 compatibility. A Wasm library build does not establish browser performance.
-
-## Offline workflow
-
-Extraction requires `ffmpeg` and `ffprobe` on PATH. It validates the selected
-source hash, first video stream, frame timestamps, and reference profile, then
-stores occupancy candidates, sampled gray, and located threshold ambiguity
-separately. Observed gray is not a recovered palette, depth, or normal field.
-
-```sh
-python3 tools/extract_reference.py source.mp4 observations.npz \
-  --expected-sha256 SHA256 --direction reverse
-python3 tools/pack_sequence.py observations.npz candidate.ghs --candidate
-python3 tools/render_reference.py observations.npz observed-preview --frames 0 144
-python3 tools/render_reference.py authored.npz authored-preview --kind authored --frames 0 144
-python3 tools/pack_tone.py authored.npz candidate.ghs authored-export \
-  --kind authored --profile reference-v1
-```
-
-`--candidate` explicitly allows an unaccepted mask for diagnostics; shape packing
-otherwise requires acceptance. A lossless round trip preserves the chosen mask,
-not proof that it is correct. Review extraction settings, ambiguity, and shape
-before recording acceptance.
-
-Previewing defaults to `observed` for existing callers. Authored preview requires
-`--kind authored` (Python: `render(source, destination, frames, kind="authored")`).
-Both use the same strict snapshot validator. No curves, relighting, repair,
-interpolation, or adoption decisions occur. Preview PNGs retain the historical
-`reference-fNNN.png` filenames and `reference-redraw.json` report name for either
-role; the report identifies the role explicitly.
-
-If you already have a lossless fixed-grid review, use
-[review recovery](docs/review-recovery.md) to recover its gray with the
-original independent occupancy. No pose guide or authoring recipe is used.
-
-Use a new output directory for every preview or tone export. Existing directories,
-even empty ones, are rejected. Partial outputs after an I/O failure are not a
-completed export; use a fresh destination when retrying. Source validation happens
-before directory creation. Output hashes, input snapshot hashes, and declared
-provenance are recorded. Mask acceptance never implies artwork adoption.
+The software is [MIT](LICENSE). [Artwork and reference data](ARTWORK.md)
+are not covered by that license. A distribution that embeds artwork must
+include a separate artwork rights notice.

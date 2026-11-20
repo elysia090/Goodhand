@@ -1,19 +1,25 @@
-//! GTK presentation of the authored raster. Black-pane placement and support are display-only.
+//! The shared native artwork raster, schedule and aperture.
 mod bearing_tone;
+#[cfg(target_os = "linux")]
+mod gtk;
 mod interior_matte;
-mod sys;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod portable;
+
+#[cfg(target_os = "linux")]
+pub(crate) use gtk::run;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) use portable::run;
 
 use self::interior_matte::InteriorMatte;
-use self::sys::*;
 use crate::black_grade;
 use crate::playback::{Cycle, Repeat, Timeline};
 use crate::reference_frame::ReferenceFrame;
 use crate::settings::WindowAppearance;
 use goodhand::RasterSpec;
-use std::ffi::{c_int, c_uint};
+use std::ffi::c_int;
 use std::io;
-use std::ptr::null_mut;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const WIDTH: usize = RasterSpec::REFERENCE.width;
 const HEIGHT: usize = RasterSpec::REFERENCE.height;
@@ -24,6 +30,7 @@ const BLACK_HEIGHT: usize = 462;
 const BLACK_BOTTOM: i32 = 8;
 const BLACK_EXTRA_TOP: i32 = 8;
 const BLACK_SHIFT: [i32; 2] = [-32, -8];
+#[cfg(any(target_os = "linux", test))]
 const MIN_SCALE: f64 = 0.75;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -107,6 +114,7 @@ impl Apertures {
         }
     }
 }
+#[cfg(any(target_os = "linux", test))]
 #[derive(Clone, Copy)]
 struct Placement {
     size: (c_int, c_int),
@@ -114,6 +122,7 @@ struct Placement {
     origin: (c_int, c_int),
 }
 
+#[cfg(any(target_os = "linux", test))]
 impl Placement {
     fn new(canvas: Canvas, width: c_int, height: c_int) -> Self {
         // Fit the selected aperture's aspect without stretching the artwork.
@@ -142,10 +151,7 @@ impl Placement {
     }
 }
 
-type Signal = unsafe extern "C" fn(Ptr, Ptr, Ptr) -> c_int;
-
-struct Window {
-    handle: Ptr,
+struct Artwork {
     renderer: ReferenceFrame,
     apertures: Apertures,
     appearance: WindowAppearance,
@@ -155,25 +161,14 @@ struct Window {
     matte: InteriorMatte,
     foreground: [u32; 256],
     timeline: Timeline,
-    time: Option<Instant>,
-    once_timeout: Option<c_uint>,
-    initial_size: Option<(c_int, c_int)>,
-    translucent: bool,
     pose: u32,
-    error: Option<io::Error>,
 }
 
-impl Window {
-    fn new(
-        handle: Ptr,
-        repeat: Repeat,
-        appearance: WindowAppearance,
-        cycle: Cycle,
-    ) -> io::Result<Self> {
+impl Artwork {
+    fn new(repeat: Repeat, appearance: WindowAppearance, cycle: Cycle) -> io::Result<Self> {
         let renderer = ReferenceFrame::new(cycle)?;
         let apertures = Apertures::new(renderer.occupied_bounds()?)?;
         Ok(Self {
-            handle,
             renderer,
             apertures,
             appearance,
@@ -183,12 +178,7 @@ impl Window {
             matte: InteriorMatte::new(),
             foreground: black_grade::palette().map(|rgb| argb(rgb, true)),
             timeline: Timeline { cycle, repeat },
-            time: None,
-            once_timeout: None,
-            initial_size: None,
-            translucent: false,
             pose: 0,
-            error: None,
         })
     }
 
@@ -196,38 +186,19 @@ impl Window {
         self.apertures.for_appearance(self.appearance)
     }
 
-    fn select_appearance(&mut self, appearance: WindowAppearance) {
-        let previous = self.canvas();
-        let scale = self.placement().scale.max(MIN_SCALE);
-        let regrade =
-            (self.appearance == WindowAppearance::Safe) != (appearance == WindowAppearance::Safe);
-        self.appearance = appearance;
-        if regrade {
-            self.paint();
-        }
-        let canvas = self.canvas();
-        if previous != canvas {
-            let (min_width, min_height) = canvas.minimum();
-            unsafe {
-                gtk_widget_set_size_request(self.handle, min_width, min_height);
-                // Preserve artwork scale when switching a floating panel.
-                if gtk_window_is_maximized(self.handle) == 0 {
-                    let (width, height) = canvas.client_at(scale);
-                    gtk_window_resize(self.handle, width, height);
-                }
-            }
-        }
-    }
-
-    fn placement(&self) -> Placement {
-        // The GTK object stays live on this event-loop thread.
-        let (width, height) = unsafe {
-            (
-                gtk_widget_get_allocated_width(self.handle),
-                gtk_widget_get_allocated_height(self.handle),
-            )
+    fn follow(&mut self, elapsed: Duration) -> io::Result<Frame> {
+        let Some(tick) = self.renderer.tick_for(self.timeline, elapsed) else {
+            return Ok(Frame::Finished);
         };
-        Placement::new(self.canvas(), width, height)
+        let pose = self
+            .renderer
+            .pose_at_tick(self.timeline.cycle, tick)
+            .ok_or_else(|| io::Error::other("invalid native playback phase"))?;
+        if pose == self.pose {
+            return Ok(Frame::Unchanged);
+        }
+        self.update(pose)?;
+        Ok(Frame::Changed)
     }
 
     fn update(&mut self, pose: u32) -> io::Result<()> {
@@ -276,235 +247,73 @@ fn argb([r, g, b]: [u8; 3], present: bool) -> u32 {
     }
 }
 
-pub(crate) fn run(repeat: Repeat, appearance: WindowAppearance, cycle: Cycle) -> io::Result<()> {
-    // All GTK state and callbacks live on this thread. Remove the callbacks
-    // before releasing their data (the Box). The FFI adapter is
-    // not linked by the source-only terminal build.
-    unsafe {
-        if gtk_init_check(null_mut(), null_mut()) == 0 {
-            return Err(io::Error::other(
-                "no GTK display; use oops --terminal for text playback",
-            ));
-        }
-        let handle = gtk_window_new(0);
-        if handle.is_null() {
-            return Err(io::Error::other("GTK window creation failed"));
-        }
-        // Keep GTK's decorated top-level. The window manager owns chrome,
-        // movement, maximization and interactive resizing.
-        let screen = gtk_widget_get_screen(handle);
-        let visual = gdk_screen_get_rgba_visual(screen);
-        let translucent = !visual.is_null() && gdk_screen_is_composited(screen) != 0;
-        if translucent {
-            gtk_widget_set_visual(handle, visual);
-        } else if appearance != WindowAppearance::Safe {
-            gtk_widget_destroy(handle);
-            return Err(io::Error::other(
-                "no composited RGBA surface; select the black window or use oops --terminal",
-            ));
-        }
-        let mut state =
-            match Window::new(handle, repeat, appearance, cycle).and_then(|mut state| {
-                state.update(0)?;
-                Ok(Box::new(state))
-            }) {
-                Ok(state) => state,
-                Err(error) => {
-                    gtk_widget_destroy(handle);
-                    return Err(error);
-                }
-            };
-        gtk_window_set_title(handle, c"oops".as_ptr());
-        gtk_widget_set_app_paintable(handle, 1);
-        let canvas = state.canvas();
-        let (min_width, min_height) = canvas.minimum();
-        gtk_widget_set_size_request(handle, min_width, min_height);
-        let (width, height) = canvas.client_at(1.0);
-        gtk_window_set_default_size(handle, width, height);
-        state.initial_size = Some((width, height));
-        state.translucent = translucent;
-        let data = std::ptr::from_mut(state.as_mut()).cast();
-        // GTK expects a type-erased GCallback; these three signals all
-        // invoke the C signature (widget, event/context, user_data) -> gint.
-        for (name, callback) in [
-            (c"draw", draw as Signal),
-            (c"delete-event", close as Signal),
-            (c"key-press-event", key as Signal),
-        ] {
-            g_signal_connect_data(
-                handle,
-                name.as_ptr(),
-                std::mem::transmute::<Signal, Callback>(callback),
-                data,
-                None,
-                0,
-            );
-        }
-        gtk_widget_show_all(handle);
-        let callback = gtk_widget_add_tick_callback(handle, tick, data, None);
-        if callback == 0 {
-            gtk_widget_destroy(handle);
-            return Err(io::Error::other("GTK playback frame clock could not start"));
-        }
-        gtk_main();
-        if let Some(timeout) = state.once_timeout.take() {
-            g_source_remove(timeout);
-        }
-        gtk_widget_remove_tick_callback(handle, callback);
-        gtk_widget_destroy(handle);
-        if let Some(error) = state.error.take() {
-            return Err(error);
-        }
-        Ok(())
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Frame {
+    Unchanged,
+    Changed,
+    Finished,
 }
 
-unsafe extern "C" fn close(_widget: Ptr, _event: Ptr, _data: Ptr) -> c_int {
-    unsafe { gtk_main_quit() };
-    1
-}
-
-unsafe extern "C" fn key(widget: Ptr, event: Ptr, data: Ptr) -> c_int {
-    let mut code: c_uint = 0;
-    unsafe {
-        if gdk_event_get_keyval(event, &mut code) == 0 {
-            return 0;
-        }
-        if matches!(code, 113 | 0xff1b) {
-            gtk_main_quit();
-            return 1;
-        }
-        let state = &mut *data.cast::<Window>();
-        if code == u32::from(b't')
-            && state.translucent
-            && gdk_screen_is_composited(gtk_widget_get_screen(widget)) != 0
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn copy_black_client(argb: &[u32], canvas: Canvas, output: &mut [u32]) {
+    const BLACK: u32 = 0xff00_0000;
+    // Integer coordinates at 1×, identical to the Cairo aperture. Native
+    // backends receive only the opaque client and scale it if resized.
+    output.fill(BLACK);
+    let offset_x = (canvas.width as i32 - WIDTH as i32) / 2 + canvas.offset_x;
+    let offset_y = -canvas.crop_top;
+    let src_x = (-offset_x).max(0) as usize;
+    let src_y = (-offset_y).max(0) as usize;
+    let dst_x = offset_x.max(0) as usize;
+    let dst_y = offset_y.max(0) as usize;
+    let width = WIDTH
+        .saturating_sub(src_x)
+        .min(canvas.width.saturating_sub(dst_x));
+    let height = HEIGHT
+        .saturating_sub(src_y)
+        .min(canvas.height.saturating_sub(dst_y));
+    for y in 0..height {
+        let src = (src_y + y) * WIDTH + src_x;
+        let dst = (dst_y + y) * canvas.width + dst_x;
+        for (to, &pixel) in output[dst..dst + width]
+            .iter_mut()
+            .zip(&argb[src..src + width])
         {
-            let next = match state.appearance {
-                WindowAppearance::Safe => WindowAppearance::Framed,
-                WindowAppearance::Framed => WindowAppearance::Clear,
-                WindowAppearance::Clear => WindowAppearance::Safe,
-            };
-            state.select_appearance(next);
-            gtk_widget_queue_draw(widget);
-            return 1;
+            *to = BLACK | pixel;
         }
     }
-    0
-}
-
-unsafe extern "C" fn stop_once(data: Ptr) -> c_int {
-    let state: &mut Window = unsafe { &mut *data.cast::<Window>() };
-    state.once_timeout = None;
-    unsafe { gtk_main_quit() };
-    // Remove this one-shot source.
-    0
-}
-
-unsafe extern "C" fn tick(_widget: Ptr, _clock: Ptr, data: Ptr) -> c_int {
-    // GTK invokes updates ahead of drawing on the same thread. The absolute
-    // clock doesn't accumulate refresh quantization or queue stale artwork.
-    let state: &mut Window = unsafe { &mut *data.cast::<Window>() };
-    let now = Instant::now();
-    if state.time.is_none() && state.timeline.repeat == Repeat::Once {
-        // A hidden/minimized widget can stop receiving frame-clock callbacks.
-        // Keep the one-turn exit independent of desktop visibility.
-        let milliseconds = state.timeline.cycle.length().as_millis() as c_uint;
-        let timeout = unsafe { g_timeout_add(milliseconds, stop_once, data) };
-        if timeout == 0 {
-            state.error = Some(io::Error::other("GTK one-turn timer could not start"));
-            unsafe { gtk_main_quit() };
-            return 1;
-        }
-        state.once_timeout = Some(timeout);
-    }
-    let elapsed = state.time.get_or_insert(now).elapsed();
-    // Honor the requested floating start size on a desktop that fits the
-    // mapped window to its work area. Never override later user resizing.
-    if let Some((w, h)) = state.initial_size {
-        if elapsed > Duration::from_millis(300) {
-            state.initial_size = None;
-        } else if unsafe { gtk_window_is_maximized(state.handle) } != 0 {
-            state.initial_size = None;
-            unsafe {
-                gtk_window_unmaximize(state.handle);
-                gtk_window_resize(state.handle, w, h);
-            }
-        }
-    }
-    let Some(tick) = state.renderer.tick_for(state.timeline, elapsed) else {
-        unsafe { gtk_main_quit() };
-        return 1;
-    };
-    let Some(pose) = state.renderer.pose_at_tick(state.timeline.cycle, tick) else {
-        return 1;
-    };
-    if pose != state.pose {
-        if let Err(error) = state.update(pose) {
-            state.error = Some(error);
-            unsafe { gtk_main_quit() };
-        } else {
-            unsafe { gtk_widget_queue_draw(state.handle) };
-        }
-    }
-    1
-}
-
-unsafe extern "C" fn draw(_widget: Ptr, canvas: Ptr, data: Ptr) -> c_int {
-    let state: &mut Window = unsafe { &mut *data.cast::<Window>() };
-    // Borrowed image memory stays valid through paint. Restoring the Cairo
-    // state releases its source pattern before the image and slice can change.
-    unsafe {
-        let view = state.placement();
-        let layout = state.canvas();
-        let (width, height) = view.size;
-        let scale = view.scale;
-        let (shade, alpha) = match state.appearance {
-            WindowAppearance::Safe => (0., 1.0),
-            WindowAppearance::Framed => (0.04, 0.14),
-            WindowAppearance::Clear => (0., 0.),
-        };
-        cairo_save(canvas);
-        cairo_set_operator(canvas, SOURCE);
-        cairo_set_source_rgba(canvas, shade, shade, shade, alpha);
-        cairo_paint(canvas);
-        if scale > 0.0 {
-            let image = cairo_image_surface_create_for_data(
-                state.argb.as_mut_ptr().cast(),
-                ARGB32,
-                WIDTH as c_int,
-                HEIGHT as c_int,
-                (4 * WIDTH) as c_int,
-            );
-            if cairo_surface_status(image) == 0 {
-                cairo_translate(canvas, view.origin.0.into(), view.origin.1.into());
-                cairo_set_operator(canvas, OVER);
-                cairo_save(canvas);
-                cairo_rectangle(canvas, 0., 0., width.into(), height.into());
-                cairo_clip(canvas);
-                let (x, y) = view.raster_origin(layout);
-                cairo_translate(canvas, x, y);
-                cairo_scale(canvas, scale, scale);
-                cairo_set_source_surface(canvas, image, 0., 0.);
-                cairo_pattern_set_filter(cairo_get_source(canvas), NEAREST);
-                cairo_rectangle(canvas, 0., 0., WIDTH as f64, HEIGHT as f64);
-                cairo_fill(canvas);
-                cairo_restore(canvas);
-            } else {
-                state.error = Some(io::Error::other(
-                    "Cairo could not create the raster surface",
-                ));
-                gtk_main_quit();
-            }
-            cairo_surface_destroy(image);
-        }
-        cairo_restore(canvas);
-    }
-    1
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_pixels_match_each_approved_placement_on_black() {
+        let src: Vec<u32> = (0..(WIDTH * HEIGHT) as u32)
+            .map(|value| 0xff00_0000 | value)
+            .collect();
+        let apertures = Apertures::new(([47, 137], [954, 549])).unwrap();
+        for canvas in [apertures.black, apertures.standard] {
+            let mut out = vec![0; canvas.width * canvas.height];
+            copy_black_client(&src, canvas, &mut out);
+            let (x, y) = Placement::new(canvas, canvas.width as i32, canvas.height as i32)
+                .raster_origin(canvas);
+            for (j, row) in out.chunks_exact(canvas.width).enumerate() {
+                for (i, &pixel) in row.iter().enumerate() {
+                    let ox = i as i32 - x as i32;
+                    let oy = j as i32 - y as i32;
+                    let expected =
+                        if (0..WIDTH as i32).contains(&ox) && (0..HEIGHT as i32).contains(&oy) {
+                            src[oy as usize * WIDTH + ox as usize]
+                        } else {
+                            0xff00_0000
+                        };
+                    assert_eq!(pixel, expected);
+                }
+            }
+        }
+    }
 
     #[test]
     fn native_motion_takes_every_scheduled_index_in_both_directions() {
@@ -552,7 +361,9 @@ mod tests {
             duration: "12".parse().unwrap(),
             ..reverse
         };
-        assert_eq!(motion_pose_at_tick(twelve, 0), None);
+        assert_eq!(motion_pose_at_tick(twelve, 0), Some(0));
+        assert_eq!(motion_pose_at_tick(twelve, 1), Some(2));
+        assert_eq!(motion_pose_at_tick(twelve, 216), None);
     }
 
     #[cfg(goodhand_native_motion)]
@@ -585,24 +396,21 @@ mod tests {
     fn motion_preserves_sampled_anchors_and_visible_poses_are_unique() {
         use crate::archive_profile::NATIVE_MOTION_POSES;
         use std::collections::HashSet;
-        let mut motion = Window::new(
-            null_mut(),
-            Repeat::Once,
-            WindowAppearance::Safe,
-            Cycle::default(),
-        )
-        .unwrap();
+        let mut motion =
+            Artwork::new(Repeat::Once, WindowAppearance::Safe, Cycle::default()).unwrap();
+        #[cfg(goodhand_embedded_playback)]
         let custom = Cycle {
             duration: "12".parse().unwrap(),
             ..Cycle::default()
         };
-        let mut reviewed =
-            Window::new(null_mut(), Repeat::Once, WindowAppearance::Safe, custom).unwrap();
+        #[cfg(goodhand_embedded_playback)]
+        let mut reviewed = Artwork::new(Repeat::Once, WindowAppearance::Safe, custom).unwrap();
         assert_eq!(
             motion.renderer.occupied_bounds().unwrap(),
             ([47, 137], [954, 549])
         );
         assert_eq!(motion.canvas().client_at(1.0), (1016, 445));
+        #[cfg(goodhand_embedded_playback)]
         assert_eq!(reviewed.renderer.pose_at_tick(custom, 1), Some(1));
         let mut signatures = HashSet::new();
         for tick in 0..NATIVE_MOTION_POSES {
@@ -613,6 +421,7 @@ mod tests {
                 "same visible artwork at tick {tick}"
             );
             // Stock W5 anchors land precisely on every fifteenth new sample.
+            #[cfg(goodhand_embedded_playback)]
             if tick % 15 == 0 {
                 reviewed.update(tick * 8 / 15).unwrap();
                 assert_eq!(motion.light, reviewed.light, "raw tone at {tick}");
@@ -707,13 +516,8 @@ mod tests {
 
     #[test]
     fn black_support_changes_only_the_interior_of_existing_dots() {
-        let mut state = Window::new(
-            null_mut(),
-            Repeat::Loop,
-            WindowAppearance::Clear,
-            Cycle::default(),
-        )
-        .unwrap();
+        let mut state =
+            Artwork::new(Repeat::Loop, WindowAppearance::Clear, Cycle::default()).unwrap();
         state.update(0).unwrap();
         let clear = state.argb.clone();
         state.appearance = WindowAppearance::Safe;
@@ -783,13 +587,8 @@ mod tests {
         assert_eq!(argb([0; 3], false), 0);
 
         // The raster path is independent of the GTK handle.
-        let mut state = Window::new(
-            null_mut(),
-            Repeat::Loop,
-            WindowAppearance::Clear,
-            Cycle::default(),
-        )
-        .unwrap();
+        let mut state =
+            Artwork::new(Repeat::Loop, WindowAppearance::Clear, Cycle::default()).unwrap();
         state.update(0).unwrap();
         assert_eq!((state.canvas().width, state.canvas().height), (1120, 560));
         let local = Placement::new(state.canvas(), 1120, 560);

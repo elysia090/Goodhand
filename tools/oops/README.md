@@ -2,13 +2,13 @@
 
 ### Island: an independent desktop window
 
-Run `oops` from a normal shell in the optional Linux GTK3 desktop build.
+Open the desktop executable or run `oops` from a shell. The native
+backend is GTK 3 on Linux, Win32 on Windows, or AppKit on macOS.
 `--window` and `--island` explicitly select the same window. Press q or
 Esc to close, or use `oops --once` to stop after one turn. Successful
 playback does not write to the shell. The window uses the desktop's
-standard title bar, border, buttons and resize handles. GTK3/GDK and
-Cairo are required; only the translucent appearances require a composited
-RGBA visual.
+standard title bar, border, buttons and resize handles. Linux needs
+GTK3/GDK and Cairo. Windows and macOS use their system frameworks.
 
 The default is a pure black 1016×445 client for the reviewed artwork,
 with no transparent gap between the canvas and the native frame.
@@ -18,8 +18,10 @@ without clipping or stretching. A faint gray reinforces existing dots
 in the lower forearm in black mode only; it changes neither geometry
 nor timing.
 
-Press t to cycle appearances on a composited desktop, or set
-`window_appearance` in the config. `safe` is the default black,
+On a composited Linux desktop, press t to cycle appearances, or set
+`window_appearance` in the config. Windows and macOS support the black
+`safe` appearance; they report an error for the other appearances.
+On Linux, `safe` is black,
 `clear` is transparent, and `framed` adds a lightly translucent
 neutral background. The native frame is the same in all three modes.
 `--config`, `--once`, `--duration` and `--direction` apply to Island.
@@ -30,8 +32,10 @@ artwork phases, one per tick on an 18 Hz timeline. The motion archive
 contains additional shapes and tones on the same point grid, not frame
 holds or crossfades. The native window follows the absolute timeline;
 monitor refresh and the compositor determine exact presentation times.
-Other turn lengths and desktop builds without the W5 tone profile keep
-the original 24 Hz schedule of 288 archived poses. The
+In the distributable build, other turn lengths sample the same motion
+archive at the selected speed. In a W4/W5 developer build, other turn
+lengths and desktop builds without W5 keep the original 24 Hz schedule
+of 288 archived poses. The
 [gray backdrop reference](../../reference/gray-backdrop/) is offline and
 does not change the appearance of Island.
 
@@ -82,9 +86,11 @@ terminal playback needs external video, Python, or FFmpeg once built.
   On the original 24 Hz timeline, each archived pose starts at the
   nearest tick to its equally spaced time (ties round up), so every
   pose has at least one scheduled tick. A slow terminal may still miss
-  submissions. The W5 window uses its 18 Hz motion archive at 30 seconds
-  only; other turn lengths use the archived schedule. The procedural
-  terminal developer scene samples the corresponding yaw on each tick.
+  submissions. The reviewed developer window uses the motion archive at
+  30 seconds and the original archived schedule at other durations. The
+  distributable window uses the motion archive at every duration. The
+  procedural terminal developer scene samples the corresponding yaw on
+  each tick.
 - `--direction reverse` (the default) follows the reviewed order.
   `--direction forward` uses the same opening pose and visits the other
   phases in reverse order, on the same timeline. It does not
@@ -197,7 +203,14 @@ This project does not distribute the required W4 pair or a desktop binary.
     cargo build --offline --release --locked
     python3 tests/pty_smoke.py target/release/oops --full
 
-### W5 shading build
+### Distribution build
+
+The distributable desktop app needs only the separately cleared final
+540-phase artwork, not the W4 review or authoring material. Follow the
+[release checklist](release/README.md). Do not build a downloadable
+package from the developer inputs.
+
+### W5 developer build
 
 W5 groups the upper forearm return into a quieter dark plane and gives
 the lower bearing plane more weight. It is a build-time opt-in layered on

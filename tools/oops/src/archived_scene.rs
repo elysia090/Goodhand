@@ -95,7 +95,7 @@ impl Archive {
 
     #[cfg(all(
         feature = "desktop-window",
-        target_os = "linux",
+        any(target_os = "linux", target_os = "windows", target_os = "macos"),
         goodhand_embedded_playback
     ))]
     pub(crate) fn frame(
@@ -113,7 +113,11 @@ impl Archive {
             })
     }
 
-    #[cfg(all(feature = "desktop-window", target_os = "linux", goodhand_w5_profile))]
+    #[cfg(all(
+        feature = "desktop-window",
+        any(target_os = "linux", target_os = "windows", target_os = "macos"),
+        goodhand_w5_profile
+    ))]
     pub(crate) fn grid_lattice(&self) -> ([f64; 2], [f64; 2], &[usize], &[usize]) {
         let center = [self.framing.center.0, self.framing.center.1];
         let size = [self.framing.size.0, self.framing.size.1];

@@ -1,16 +1,14 @@
-#[cfg(any(test, goodhand_embedded_playback))]
+#![cfg_attr(
+    all(target_os = "windows", feature = "desktop-window"),
+    windows_subsystem = "windows"
+)]
+
+#[cfg(any(test, goodhand_embedded_playback, goodhand_release_artwork))]
 mod archive_profile;
 #[cfg(any(test, goodhand_embedded_playback))]
 mod archived_scene;
 mod arm_scene;
-#[cfg(any(
-    test,
-    all(
-        feature = "desktop-window",
-        target_os = "linux",
-        goodhand_embedded_playback
-    )
-))]
+#[cfg(any(test, goodhand_desktop_artwork))]
 mod black_grade;
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
 mod cursor_report;
@@ -18,18 +16,10 @@ mod dots;
 mod measurement;
 mod playback;
 mod projection;
-#[cfg(all(
-    feature = "desktop-window",
-    target_os = "linux",
-    goodhand_embedded_playback
-))]
+#[cfg(goodhand_desktop_artwork)]
 mod reference_frame;
 mod settings;
-#[cfg(all(
-    feature = "desktop-window",
-    target_os = "linux",
-    goodhand_embedded_playback
-))]
+#[cfg(goodhand_desktop_artwork)]
 mod window;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
@@ -39,7 +29,10 @@ mod terminal_keys;
 
 use playback::Repeat;
 use settings::{Key, Overrides};
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    goodhand_desktop_artwork,
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+))]
 use settings::{Settings, read_config};
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -47,7 +40,7 @@ use std::process::ExitCode;
 
 const HELP: &str = "oops 0.0.1
 
-Open an independent Goodhand window (Linux desktop build).
+Open an independent Goodhand window (desktop build).
 Playback loops in 30 seconds; press q or Esc to close the window.
 
 Usage: oops [--window | --island] [--config PATH] [--once] [TURN OPTIONS]
@@ -180,7 +173,10 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Options, Strin
     Ok(options)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    goodhand_desktop_artwork,
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+))]
 impl Options {
     fn settings(self) -> Result<Settings, String> {
         let file = self.config.as_deref().map(read_config).transpose()?;
@@ -197,6 +193,12 @@ fn main() -> ExitCode {
     match options.mode {
         Mode::Help => {
             print!("{HELP}");
+            #[cfg(goodhand_release_artwork)]
+            println!(
+                "Desktop: reviewed W5 native artwork. Terminal preview: {}.",
+                arm_scene::CONTENT_LABEL
+            );
+            #[cfg(not(goodhand_release_artwork))]
             println!("This build plays {}.", arm_scene::CONTENT_LABEL);
             ExitCode::SUCCESS
         }
@@ -209,11 +211,7 @@ fn main() -> ExitCode {
     }
 }
 
-#[cfg(all(
-    feature = "desktop-window",
-    target_os = "linux",
-    goodhand_embedded_playback
-))]
+#[cfg(goodhand_desktop_artwork)]
 fn run_window(options: Options) -> ExitCode {
     let repeat = options.repeat;
     let config = match options.settings() {
@@ -226,13 +224,19 @@ fn run_window(options: Options) -> ExitCode {
     }
 }
 
-#[cfg(not(all(
-    feature = "desktop-window",
-    target_os = "linux",
-    goodhand_embedded_playback
-)))]
+#[cfg(not(goodhand_desktop_artwork))]
 fn run_window(_options: Options) -> ExitCode {
-    error_exit("native window is unavailable in this build; use oops --terminal for text playback")
+    error_exit(
+        if cfg!(all(
+            target_os = "linux",
+            target_arch = "x86_64",
+            target_env = "gnu"
+        )) {
+            "native window is unavailable in this build; use oops --terminal for text playback"
+        } else {
+            "native window is unavailable in this build; use a supported desktop package"
+        },
+    )
 }
 
 fn error_exit(reason: &str) -> ExitCode {

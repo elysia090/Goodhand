@@ -3,6 +3,7 @@ name = "oops"
 version = "0.0.1"
 edition = "2024"
 publish = false
+license = "MIT"
 rust-version = "1.85"
 description = "A rotating arm playback pilot"
 

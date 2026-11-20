@@ -317,6 +317,14 @@ pub fn read_config(path: &Path) -> Result<Overrides, String> {
 }
 
 fn read_config_inner(path: &Path) -> Result<Overrides, String> {
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")))]
+    if !path
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .is_file()
+    {
+        return Err("expected a regular file".into());
+    }
     let mut options = File::options();
     options.read(true);
     #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]

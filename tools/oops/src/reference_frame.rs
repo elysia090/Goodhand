@@ -1,4 +1,5 @@
 //! Native raster and occupancy, independent of window compositing.
+#[cfg(goodhand_embedded_playback)]
 use crate::archived_scene::Archive;
 use goodhand::{RasterSpec, write_surface};
 use std::io;
@@ -25,39 +26,53 @@ impl MotionArchive {
     }
 }
 
-pub(crate) struct ReferenceFrame {
-    archive: Archive,
+enum Artwork {
+    #[cfg(goodhand_embedded_playback)]
+    Review(Archive),
     #[cfg(goodhand_native_motion)]
-    motion: Option<MotionArchive>,
+    Motion(MotionArchive),
+}
+
+pub(crate) struct ReferenceFrame {
+    art: Artwork,
     opaque: Vec<u8>,
 }
 
 impl ReferenceFrame {
     pub(crate) fn new(cycle: crate::playback::Cycle) -> io::Result<Self> {
+        // Distribution never embeds the review seed. Developer builds keep
+        // their legacy timing for non-default turn durations.
         #[cfg(not(goodhand_native_motion))]
         let _ = cycle;
-        let archive = Archive::embedded()?;
         #[cfg(goodhand_native_motion)]
-        let motion = (cycle.duration.seconds() == crate::archive_profile::NATIVE_MOTION_SECONDS)
-            .then(MotionArchive::embedded)
-            .transpose()?;
-        let out = Self {
-            archive,
-            #[cfg(goodhand_native_motion)]
-            motion,
-            opaque: Vec::new(),
-        };
-        #[cfg(goodhand_native_motion)]
-        if let Some(motion) = &out.motion {
-            use crate::archive_profile::NATIVE_MOTION_POSES;
-            if out.occupied_bounds()? != occupied_bounds(NATIVE_MOTION_POSES, |i| motion.frame(i))?
-            {
+        if cfg!(goodhand_release_artwork)
+            || cycle.duration.seconds() == crate::archive_profile::NATIVE_MOTION_SECONDS
+        {
+            #[cfg(goodhand_release_artwork)]
+            let reviewed_bounds = ([47, 137], [954, 549]);
+            #[cfg(goodhand_embedded_playback)]
+            let reviewed_bounds = {
+                let review = Archive::embedded()?;
+                occupied_bounds(crate::archive_profile::POSES, |pose| review.frame(pose))?
+            };
+            let out = Self {
+                art: Artwork::Motion(MotionArchive::embedded()?),
+                opaque: Vec::new(),
+            };
+            if out.occupied_bounds()? != reviewed_bounds {
                 return Err(io::Error::other(
                     "native motion archive changes the reviewed aperture",
                 ));
             }
+            return Ok(out);
         }
-        Ok(out)
+        #[cfg(goodhand_embedded_playback)]
+        return Ok(Self {
+            art: Artwork::Review(Archive::embedded()?),
+            opaque: Vec::new(),
+        });
+        #[cfg(goodhand_release_artwork)]
+        Err(io::Error::other("the release artwork was not selected"))
     }
 
     pub(crate) fn tick_for(
@@ -65,26 +80,37 @@ impl ReferenceFrame {
         timeline: crate::playback::Timeline,
         elapsed: std::time::Duration,
     ) -> Option<u64> {
-        #[cfg(goodhand_native_motion)]
-        if self.motion.is_some() {
-            return motion_tick(timeline, elapsed);
+        match &self.art {
+            #[cfg(goodhand_native_motion)]
+            Artwork::Motion(_) => motion_tick(timeline, elapsed),
+            #[cfg(goodhand_embedded_playback)]
+            Artwork::Review(_) => timeline.sample(elapsed).map(|slot| slot.phase.tick),
         }
-        timeline.sample(elapsed).map(|slot| slot.phase.tick)
     }
 
     pub(crate) fn pose_at_tick(&self, cycle: crate::playback::Cycle, tick: u64) -> Option<u32> {
-        #[cfg(goodhand_native_motion)]
-        if self.motion.is_some() {
-            return motion_pose_at_tick(cycle, tick);
+        match &self.art {
+            #[cfg(goodhand_native_motion)]
+            Artwork::Motion(_) => motion_pose_at_tick(cycle, tick),
+            #[cfg(goodhand_embedded_playback)]
+            Artwork::Review(_) => crate::archived_scene::pose_at_tick(cycle, tick),
         }
-        crate::archived_scene::pose_at_tick(cycle, tick)
     }
 
     /// Bounds over the full turn, in source pixels; the upper bound is exclusive.
     pub(crate) fn occupied_bounds(&self) -> io::Result<([i32; 2], [i32; 2])> {
-        occupied_bounds(crate::archive_profile::POSES, |pose| {
-            self.archive.frame(pose)
-        })
+        match &self.art {
+            #[cfg(goodhand_native_motion)]
+            Artwork::Motion(motion) => {
+                occupied_bounds(crate::archive_profile::NATIVE_MOTION_POSES, |pose| {
+                    motion.frame(pose)
+                })
+            }
+            #[cfg(goodhand_embedded_playback)]
+            Artwork::Review(review) => {
+                occupied_bounds(crate::archive_profile::POSES, |pose| review.frame(pose))
+            }
+        }
     }
 
     pub(crate) fn render(
@@ -93,36 +119,42 @@ impl ReferenceFrame {
         pixels: &mut [u8],
         alpha: Option<&mut [u8]>,
     ) -> io::Result<()> {
-        #[cfg(goodhand_native_motion)]
-        if let Some(motion) = &self.motion {
-            // The additional phases already carry W5 point tones. Do not apply
-            // the anchor correction again or derive coverage from gray values.
-            let (shape, gray) = motion.frame(pose)?;
-            return write_raster(shape, gray, &mut self.opaque, pixels, alpha);
+        match &mut self.art {
+            #[cfg(goodhand_native_motion)]
+            Artwork::Motion(motion) => {
+                // Final W5 point tones, not another application of the anchor grade.
+                let (shape, gray) = motion.frame(pose)?;
+                write_raster(shape, gray, &mut self.opaque, pixels, alpha)
+            }
+            #[cfg(goodhand_embedded_playback)]
+            Artwork::Review(review) => {
+                let (shape, stock) = review.frame(pose)?;
+                #[cfg(goodhand_w5_profile)]
+                let corrected = shading::correct(review, pose, shape, stock)?;
+                #[cfg(goodhand_w5_profile)]
+                let stock = corrected.as_deref().unwrap_or(stock);
+                write_raster(shape, stock, &mut self.opaque, pixels, alpha)
+            }
         }
-        let (shape, stock) = self.archive.frame(pose)?;
-        #[cfg(goodhand_w5_profile)]
-        let corrected = shading::correct(&mut self.archive, pose, shape, stock)?;
-        #[cfg(goodhand_w5_profile)]
-        let stock = corrected.as_deref().unwrap_or(stock);
-        write_raster(shape, stock, &mut self.opaque, pixels, alpha)
     }
 }
 
 #[cfg(any(goodhand_native_motion, test))]
 pub(super) fn motion_pose_at_tick(cycle: crate::playback::Cycle, tick: u64) -> Option<u32> {
-    use crate::archive_profile::{NATIVE_MOTION_POSES, NATIVE_MOTION_SECONDS};
+    use crate::archive_profile::{NATIVE_MOTION_FPS, NATIVE_MOTION_POSES};
     use crate::playback::Direction;
 
-    let ticks = u64::from(NATIVE_MOTION_POSES);
-    if cycle.duration.seconds() != NATIVE_MOTION_SECONDS || tick >= ticks {
+    let ticks = cycle.length().as_secs() * u64::from(NATIVE_MOTION_FPS);
+    if tick >= ticks {
         return None;
     }
     // Each 18 Hz tick grows the source phase by precisely 8/15ths of a
     // reviewed pose. Forward uses the same archive lattice in reverse order.
+    let total = u64::from(NATIVE_MOTION_POSES);
+    let pose = tick * total / ticks;
     Some(match cycle.direction {
-        Direction::Reverse => tick as u32,
-        Direction::Forward => ((ticks - tick) % ticks) as u32,
+        Direction::Reverse => pose as u32,
+        Direction::Forward => ((total - pose) % total) as u32,
     })
 }
 
