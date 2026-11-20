@@ -27,7 +27,7 @@ Terminal framing flags do not.
 
 The default 30-second turn schedules all 288 poses on its 24 Hz clock,
 holding them for three and two ticks in turn. Display refresh and actual
-submissions depend on the compositor. The [gray backdrop study](../../study/gray-backdrop/)
+submissions depend on the compositor. The [gray backdrop reference](../../reference/gray-backdrop/)
 is offline and does not change the appearance of Island.
 
 ### Terminal fallback

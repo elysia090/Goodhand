@@ -55,8 +55,8 @@ to close; successful playback adds no shell output.
 The source-only build has no embedded review archive. Use
 `oops --terminal` for the procedural terminal view; `--alternate-buffer`
 is an optional terminal change, not Island. See the [playback guide](tools/oops/README.md)
-for supported builds and terminal settings. The [gray backdrop](study/gray-backdrop/)
-is an offline study, not a runtime mode.
+for supported builds and terminal settings. The [gray backdrop](reference/gray-backdrop/)
+is an offline visual reference, not a runtime mode.
 
 ## Checks
 
