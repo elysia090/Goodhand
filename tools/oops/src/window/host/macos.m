@@ -12,6 +12,7 @@ typedef int32_t (*GoodhandUpdate)(void *context, const uint32_t **pixels);
 
 @interface GoodhandView : NSView
 @property(nonatomic, weak) GoodhandController *controller;
+@property(nonatomic, strong) NSColor *backdrop;
 - (BOOL)replaceFrame:(const uint32_t *)pixels
                width:(uint32_t)width
               height:(uint32_t)height;
@@ -83,7 +84,7 @@ typedef int32_t (*GoodhandUpdate)(void *context, const uint32_t **pixels);
 
 - (void)drawRect:(NSRect)dirty {
     const NSRect bounds = self.bounds;
-    [[NSColor blackColor] setFill];
+    [self.backdrop setFill];
     NSRectFill(dirty);
     if (_image == NULL || NSWidth(bounds) <= 0 || NSHeight(bounds) <= 0) {
         return;
@@ -202,10 +203,11 @@ static NSMenu *goodhand_menu(void) {
 // the framebuffer could not be initialized. Graphics consumes no Rust
 // state after this returns.
 int32_t goodhand_run_platform(void *context, uint32_t width, uint32_t height,
+                             uint32_t client_width, uint32_t client_height,
                              uint32_t min_width, uint32_t min_height,
-                             GoodhandUpdate update) {
+                             uint32_t background, GoodhandUpdate update) {
     if (![NSThread isMainThread] || update == NULL || width == 0 || height == 0 ||
-        min_width == 0 || min_height == 0 || min_width > width || min_height > height ||
+        min_width == 0 || min_height == 0 || min_width > client_width || min_height > client_height ||
         (size_t)width > (size_t)LONG_MAX / sizeof(uint32_t) / height) {
         return 1;
     }
@@ -216,7 +218,7 @@ int32_t goodhand_run_platform(void *context, uint32_t width, uint32_t height,
         }
         app.mainMenu = goodhand_menu();
 
-        const NSRect rect = NSMakeRect(0, 0, width, height);
+        const NSRect rect = NSMakeRect(0, 0, client_width, client_height);
         const NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                                         NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
         NSWindow *window = [[NSWindow alloc] initWithContentRect:rect
@@ -234,13 +236,17 @@ int32_t goodhand_run_platform(void *context, uint32_t width, uint32_t height,
         controller.height = height;
         controller.view = view;
         view.controller = controller;
+        view.backdrop = [NSColor colorWithSRGBRed:((background >> 16) & 0xff) / 255.0
+                                           green:((background >> 8) & 0xff) / 255.0
+                                            blue:(background & 0xff) / 255.0
+                                           alpha:1.0];
         view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         window.releasedWhenClosed = NO;
         window.delegate = controller;
         app.delegate = controller;
         window.title = @"oops";
         window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
-        window.backgroundColor = [NSColor blackColor];
+        window.backgroundColor = view.backdrop;
         window.contentView = view;
         window.contentMinSize = NSMakeSize(min_width, min_height);
         [window setContentSize:rect.size];

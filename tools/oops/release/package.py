@@ -14,7 +14,8 @@ import time
 import zipfile
 from pathlib import Path
 
-VERSION = "0.0.1"
+VERSION = "0.0.2"
+TURN_SECONDS = 45
 HOSTS = {
     ("Linux", "x86_64"): ("linux", "x64"),
     ("Linux", "aarch64"): ("linux", "arm64"),
@@ -79,9 +80,9 @@ def local_smoke(executable, *, launch_window=True):
         return
     # Do not treat version output or metadata alone as a runnable app.
     start = time.monotonic()
-    subprocess.run([str(executable), "--once"], check=True, timeout=40)
-    if not 29.0 <= time.monotonic() - start <= 37.0:
-        raise ValueError("native window did not complete a full 30-second run")
+    subprocess.run([str(executable), "--once"], check=True, timeout=TURN_SECONDS + 10)
+    if not TURN_SECONDS - 1 <= time.monotonic() - start <= TURN_SECONDS + 7:
+        raise ValueError(f"native window did not complete a full {TURN_SECONDS}-second run")
 
 
 def linux_archive(stage, archive):

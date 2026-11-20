@@ -41,11 +41,13 @@ pub(crate) struct ReferenceFrame {
 impl ReferenceFrame {
     pub(crate) fn new(cycle: crate::playback::Cycle) -> io::Result<Self> {
         // Distribution never embeds the review seed. Developer builds keep
-        // their legacy timing for non-default turn durations.
+        // their legacy playback for durations other than the window
+        // default and the original 30-second reviewed turn.
         #[cfg(not(goodhand_native_motion))]
         let _ = cycle;
         #[cfg(goodhand_native_motion)]
         if cfg!(goodhand_release_artwork)
+            || cycle.duration == crate::playback::CycleDuration::WINDOW_DEFAULT
             || cycle.duration.seconds() == crate::archive_profile::NATIVE_MOTION_SECONDS
         {
             #[cfg(goodhand_release_artwork)]
@@ -73,6 +75,11 @@ impl ReferenceFrame {
         });
         #[cfg(goodhand_release_artwork)]
         Err(io::Error::other("the release artwork was not selected"))
+    }
+
+    #[cfg(goodhand_native_motion)]
+    pub(crate) fn uses_reviewed_motion(&self) -> bool {
+        matches!(&self.art, Artwork::Motion(_))
     }
 
     pub(crate) fn tick_for(
@@ -140,16 +147,23 @@ impl ReferenceFrame {
 }
 
 #[cfg(any(goodhand_native_motion, test))]
-pub(super) fn motion_pose_at_tick(cycle: crate::playback::Cycle, tick: u64) -> Option<u32> {
+fn motion_slots(cycle: crate::playback::Cycle) -> u64 {
     use crate::archive_profile::{NATIVE_MOTION_FPS, NATIVE_MOTION_POSES};
+    // Slow turns pace the approved poses themselves rather than aliasing
+    // a faster tick grid into uneven holds. Fast turns cap at 18 updates/s.
+    (cycle.length().as_secs() * u64::from(NATIVE_MOTION_FPS)).min(u64::from(NATIVE_MOTION_POSES))
+}
+
+#[cfg(any(goodhand_native_motion, test))]
+pub(super) fn motion_pose_at_tick(cycle: crate::playback::Cycle, tick: u64) -> Option<u32> {
+    use crate::archive_profile::NATIVE_MOTION_POSES;
     use crate::playback::Direction;
 
-    let ticks = cycle.length().as_secs() * u64::from(NATIVE_MOTION_FPS);
+    let ticks = motion_slots(cycle);
     if tick >= ticks {
         return None;
     }
-    // Each 18 Hz tick grows the source phase by precisely 8/15ths of a
-    // reviewed pose. Forward uses the same archive lattice in reverse order.
+    // Forward uses the same archive lattice in reverse order.
     let total = u64::from(NATIVE_MOTION_POSES);
     let pose = tick * total / ticks;
     Some(match cycle.direction {
@@ -163,20 +177,18 @@ pub(super) fn motion_tick(
     timeline: crate::playback::Timeline,
     elapsed: std::time::Duration,
 ) -> Option<u64> {
-    use crate::archive_profile::NATIVE_MOTION_FPS;
     use crate::playback::Repeat;
 
-    // Compare the original absolute epoch; never chain rounded 55.56-ms
-    // timers. Reduce before multiplication to bound large durations.
+    // Compare the original absolute epoch rather than adding rounded
+    // durations. Reduce before multiplying to keep the arithmetic bounded.
     let seconds = timeline.cycle.length().as_secs();
     if timeline.repeat == Repeat::Once && elapsed.as_secs() >= seconds {
         return None;
     }
-    let fps = u64::from(NATIVE_MOTION_FPS);
-    Some(
-        (elapsed.as_secs() % seconds) * fps
-            + u64::from(elapsed.subsec_nanos()) * fps / 1_000_000_000,
-    )
+    const NANOSECOND_SCALE: u64 = 1_000_000_000;
+    let within =
+        (elapsed.as_secs() % seconds) * NANOSECOND_SCALE + u64::from(elapsed.subsec_nanos());
+    Some(within * motion_slots(timeline.cycle) / (seconds * NANOSECOND_SCALE))
 }
 
 fn occupied_bounds(

@@ -1,20 +1,17 @@
-oops 0.0.1
+oops 0.0.2
 
-A rotating hand, in its own window. The default turn lasts 30 seconds,
-with 18 different artwork phases each second on the playback timeline.
-The display or compositor may miss frames under load.
+A rotating hand in a compact native window. The default turn lasts
+45 seconds, with 540 artwork phases scheduled evenly at 12 per second.
+Your display may miss frames under load. Use --duration 30 to play the
+same turn at 18 phases per second.
 
-Windows: extract the ZIP and open oops.exe.
-macOS: extract the ZIP and open oops.app.
-Linux: extract the archive and launch oops from your desktop or shell.
-       Requires a GTK 3 desktop runtime on the architecture you downloaded.
+Windows: extract the x64 ZIP and open oops.exe.
+Linux: extract the x64 archive and open oops (or run ./oops).
+       Requires a GTK 3 desktop runtime.
+x64 is for 64-bit Intel or AMD. Other builds are not in this release.
 
-Press q or Esc, or close the window, to exit. It also accepts --once for a
-single turn. Native playback requires no terminal, media player or Python.
+Press q or Esc, or close the window, to exit. Use --once to play one
+turn. Native playback needs no terminal, media player or Python.
 
-Match the download to your OS and architecture:
-  x64   = 64-bit Intel or AMD
-  arm64 = 64-bit Arm; choose this for Apple silicon
-
-LICENSE covers the software. ARTWORK-LICENSE.txt covers the artwork in
-this distribution. EXECUTABLE.sha256 identifies the packaged executable.
+LICENSE covers the software. See ARTWORK-LICENSE.txt for the separate
+artwork notice. EXECUTABLE.sha256 identifies the packaged executable.

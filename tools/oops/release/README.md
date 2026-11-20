@@ -1,18 +1,16 @@
-# oops 0.0.1 release checklist
+# oops 0.0.2 release checklist
 
-The release is not a terminal recorder. It shows the reviewed black
-`oops` artwork in a native 1016×445 logical-pixel window, with a
-30-second turn and 540 phases at 18 Hz by default. GTK 3 can also use
+Build Windows x64 and Linux x64 packages for this release. Both use a
+compact native pane (663×290 logical client for the reviewed artwork)
+and schedule the same 540 phases over one 45-second turn. The reviewed
+wrist tone is applied by default in the opaque pane. GTK 3 also supports
 its two existing translucent appearances. The Win32 and AppKit ports
-use the standard chrome and the black artwork only.
+use the native frame and the opaque artwork.
 
-## Release status
-
-No v0.0.1 package is published. Linux x64 has run with the reviewed
-artwork on native Xfce. Linux ARM64 and both Windows architectures have
-passed synthetic CI but still need native release checks. macOS
-downloads are on hold for both Intel and Apple silicon; AppKit source
-and synthetic CI remain in place.
+Both ARM64 downloads are out of scope for v0.0.2, and macOS downloads
+remain on hold for both Intel and Apple silicon. Preserve the published
+v0.0.1 tag and its packages. Do not publish only one of the two v0.0.2
+packages.
 
 ## Distribution boundary
 
@@ -65,28 +63,32 @@ publishes binaries. Passing it is only a build gate.
 
 ## Windows x64 release build in Actions
 
-For v0.0.1, put the approved Linux x64 binary archive on the
-`v0.0.1` draft release; do not upload the extracted art. Manually run
-**Windows x64 release build** on `main` with numeric IDs for the draft
-and its Linux asset. The job's read-only token must be able to read that
-draft. If it cannot, stop rather than making the draft public or adding
-a long-lived credential.
+Manually run **Windows x64 release build** on `release/oops-v0.0.2`
+before merge with its exact source commit SHA. Run it again on `main`
+after merge if its release commit differs. The job fetches the existing v0.0.1
+Linux x64 archive and verifies its pinned archive and executable SHA-256.
+The final approved 540-phase artwork bytes have not changed. This uses
+no draft release credentials and publishes no release.
 
-The job checks the Linux archive and executable SHA-256, recovers the
-approved final 540 phases within the runner, and builds Windows x64
-with MSVC. Its artifact contains only the Windows ZIP and companion
-checksum, not the intermediate files. CLI and build tests do not
-certify a desktop launch. Download the artifact and test the enclosed
-`oops.exe` before attaching the Windows ZIP to the release. This job
-does not publish or modify the draft.
+The job extracts only that approved pair and its notice inside the
+ephemeral runner, builds with MSVC and packages the real Windows ZIP
+and checksum. Neither artwork input goes into the CI artifact. Confirm
+the source SHA and the archive checksum from Actions. Desktop behavior
+is separate from the CLI and build checks. Do not merge or ship until
+the artifact's window controls and playback have been tested interactively on
+Windows 11 x64. Run the hover and keyboard checks on the packaged build
+with the pointer away at rest, after minimize/restore and on mixed-DPI
+monitors. Also check accessibility focus and the contrast-theme fallback.
 
 ## Verify and package
 
 1. Launch the final executable on every OS and CPU you intend to list.
    Check window title, initial aperture, first pose, native controls,
    q/Esc, resize, minimize/restore and `--once`. Compare the client
-   against the reviewed Linux bitmap. On a normal desktop, check 540
-   different phases in order and a seamless wrap; if the compositor
+   against the reviewed Linux bitmap. Verify that the real native chrome
+   blends at rest, reveals on hover and remains accessible by keyboard,
+   without a geometry jump. Check OS-native fallback separately. On a
+   normal desktop, check 540 phases in order and a seamless wrap; if the compositor
    drops a phase, note the observation instead of certifying cadence
    solely from a compressed recording or automated build.
 2. On macOS create `oops.app/Contents/MacOS/oops` from the executable
@@ -111,8 +113,8 @@ python3 tools/oops/release/package.py \
 
 4. Check the archive's companion SHA-256 and the internal executable's
    checksum. Linux archives use `0755` for directories and `oops`, and
-   `0644` for notices and checksum files. Reopen from a fresh extraction. Attach only the archives
-   for the targets that passed and their matching checksums. The app
+   `0644` for notices and checksum files. Reopen from a fresh
+   extraction. Attach both x64 archives and matching checksums. The app
    must work without Python or a terminal for the native flow.
 
 Before publishing, verify each package included in the release and its

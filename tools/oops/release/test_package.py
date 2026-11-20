@@ -1,3 +1,4 @@
+import argparse
 import hashlib
 import os
 import struct
@@ -5,9 +6,10 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from extract_linux_artwork import extract_input
-from package import executable_target, linux_archive
+from package import VERSION, executable_target, linux_archive, local_smoke
 
 
 class Architecture(unittest.TestCase):
@@ -40,11 +42,35 @@ class Architecture(unittest.TestCase):
             executable_target(pe)
 
 
+class LocalSmoke(unittest.TestCase):
+    def test_current_default_runs_one_45_second_turn(self):
+        results = [
+            argparse.Namespace(stdout=f"oops {VERSION}\n"),
+            argparse.Namespace(stdout="Desktop: reviewed W5 native artwork."),
+            argparse.Namespace(stdout=""),
+        ]
+        with patch("package.subprocess.run", side_effect=results) as run:
+            with patch("package.time.monotonic", side_effect=[10, 55]):
+                local_smoke(Path("oops"))
+            self.assertEqual(run.call_args.args[0], ["oops", "--once"])
+
+    def test_previous_duration_is_rejected_even_with_current_version(self):
+        results = [
+            argparse.Namespace(stdout=f"oops {VERSION}\n"),
+            argparse.Namespace(stdout="Desktop: reviewed W5 native artwork."),
+            argparse.Namespace(stdout=""),
+        ]
+        with patch("package.subprocess.run", side_effect=results):
+            with patch("package.time.monotonic", side_effect=[10, 40]):
+                with self.assertRaisesRegex(ValueError, "45-second"):
+                    local_smoke(Path("oops"))
+
+
 class LinuxArchive(unittest.TestCase):
     def test_permissions_and_digest_are_independent_of_build_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            stage = root / "oops-v0.0.1-linux-x64"
+            stage = root / f"oops-v{VERSION}-linux-x64"
             stage.mkdir(mode=0o700)
             (stage / "oops").write_bytes(b"executable")
             doc = stage / "LICENSE"

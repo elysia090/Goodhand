@@ -31,7 +31,7 @@ impl InteriorMatte {
         self.depth[grid(x + 1, y + 1)]
     }
 
-    pub(super) fn apply(&mut self, gray: &[u8], occupied: &[u8], destination: &mut [u32]) {
+    pub(super) fn measure_depth(&mut self, occupied: &[u8]) {
         for y in 1..=ROWS {
             for x in 1..=COLS {
                 self.depth[grid(x, y)] = if occupied[raster(x, y)] == 0 {
@@ -63,6 +63,10 @@ impl InteriorMatte {
                 self.depth[i] = self.depth[i].min(near + 1);
             }
         }
+    }
+
+    pub(super) fn apply(&mut self, gray: &[u8], occupied: &[u8], destination: &mut [u32]) {
+        self.measure_depth(occupied);
         for y in 1..=ROWS {
             for x in 1..=COLS {
                 let i = grid(x, y);
