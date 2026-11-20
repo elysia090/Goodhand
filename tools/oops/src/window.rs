@@ -299,7 +299,7 @@ pub(crate) fn run(repeat: Repeat, appearance: WindowAppearance, cycle: Cycle) ->
                     return Err(error);
                 }
             };
-        gtk_window_set_title(handle, c"Goodhand".as_ptr());
+        gtk_window_set_title(handle, c"oops".as_ptr());
         gtk_widget_set_app_paintable(handle, 1);
         let canvas = state.canvas();
         let (min_width, min_height) = canvas.minimum();
