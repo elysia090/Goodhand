@@ -21,15 +21,7 @@ concurrency:
 
 jobs:
   build:
-    if: >-
-      github.repository == 'elysia090/Goodhand' &&
-      github.ref == 'refs/heads/main' && github.actor == 'elysia090' &&
-      github.run_attempt == '1' &&
-      inputs.release_id == '452246272' && inputs.linux_asset_id == '770356764'
-    permissions:
-      # Temporary for the approved first release build; revert after dispatch.
-      # The release input step sends only GET requests to the draft API.
-      contents: write
+    if: github.repository == 'elysia090/Goodhand' && github.ref == 'refs/heads/main'
     runs-on: windows-2025
     timeout-minutes: 20
     env:
@@ -80,7 +72,7 @@ jobs:
               $draft = Invoke-RestMethod -ErrorAction Stop -TimeoutSec 20 -Method Get `
                   -Uri "$baseUrl/$env:RELEASE_ID" -Headers $headers
           } catch {
-              throw "The specified draft release is not readable with the temporary release-job token"
+              throw "The specified draft release is not readable with the workflow's read-only token"
           }
           if ($draft.id -ne [long]$env:RELEASE_ID -or -not $draft.draft -or $draft.tag_name -cne "v0.0.1") {
               throw "The source must be the v0.0.1 draft release"
