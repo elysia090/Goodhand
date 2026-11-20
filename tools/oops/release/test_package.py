@@ -1,7 +1,11 @@
+import os
 import struct
+import tarfile
+import tempfile
 import unittest
+from pathlib import Path
 
-from package import executable_target
+from package import executable_target, linux_archive
 
 
 class Architecture(unittest.TestCase):
@@ -32,3 +36,29 @@ class Architecture(unittest.TestCase):
         struct.pack_into("<H", pe, 156, 3)
         with self.assertRaises(ValueError):
             executable_target(pe)
+
+
+class LinuxArchive(unittest.TestCase):
+    def test_permissions_and_digest_are_independent_of_build_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stage = root / "oops-v0.0.1-linux-x64"
+            stage.mkdir(mode=0o700)
+            (stage / "oops").write_bytes(b"executable")
+            doc = stage / "LICENSE"
+            doc.write_text("license", encoding="ascii")
+            first, second = root / "first.tar.gz", root / "second.tar.gz"
+            linux_archive(stage, first)
+            os.utime(doc, (9, 9))
+            if os.name != "nt":
+                stage.chmod(0o755)
+                doc.chmod(0o600)
+            linux_archive(stage, second)
+            self.assertEqual(first.read_bytes(), second.read_bytes())
+            with tarfile.open(first) as archive:
+                self.assertEqual(archive.getmember(stage.name).mode, 0o755)
+                self.assertEqual(archive.getmember(f"{stage.name}/oops").mode, 0o755)
+                notice = archive.getmember(f"{stage.name}/LICENSE")
+                self.assertEqual(notice.mode, 0o644)
+                self.assertEqual((notice.uname, notice.gname), ("", ""))
+                self.assertEqual(archive.extractfile(notice).read(), b"license")

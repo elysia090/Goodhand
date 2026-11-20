@@ -6,6 +6,14 @@ The release is not a terminal recorder. It shows the reviewed black
 its two existing translucent appearances. The Win32 and AppKit ports
 use the standard chrome and the black artwork only.
 
+## Release status
+
+No v0.0.1 package is published. Linux x64 has run with the reviewed
+artwork on native Xfce. Linux ARM64 and both Windows architectures have
+passed synthetic CI but still need native release checks. macOS
+downloads are on hold for both Intel and Apple silicon; AppKit source
+and synthetic CI remain in place.
+
 ## Distribution boundary
 
 The software is MIT. Confirm permission for the exact final
@@ -43,7 +51,9 @@ macOS uses system `shasum -a 256`.
 
 Set `GOODHAND_RELEASE_ARTWORK_DIR` to the absolute directory holding
 verified `shape.ghs` and `tone.ght`. Leave the three developer variables
-unset. Set a new clean `CARGO_TARGET_DIR`, then run on each host:
+unset. Set a new clean `CARGO_TARGET_DIR` and remap absolute source
+paths with rustc's `--remap-path-prefix` so packages do not expose local
+build directories. Then run on each host:
 
 ```sh
 cargo +1.100.0 test --manifest-path tools/oops/Cargo.toml --locked --offline --release --features desktop-window
@@ -83,10 +93,11 @@ python3 tools/oops/release/package.py \
 ```
 
 4. Check the archive's companion SHA-256 and the internal executable's
-   checksum. Reopen from a fresh extraction. Attach only the archives
+   checksum. Linux archives use `0755` for directories and `oops`, and
+   `0644` for notices and checksum files. Reopen from a fresh extraction. Attach only the archives
    for the targets that passed and their matching checksums. The app
    must work without Python or a terminal for the native flow.
 
-Do not create the public tag or release while any requested native
-package, artwork permission, signing gate, or clean-download check
-remains unresolved.
+Before publishing, verify each package included in the release and its
+artwork, signing and clean-download requirements. Omit held targets
+rather than listing unavailable downloads.

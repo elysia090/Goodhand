@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Package a reviewed native distribution locally; never upload anything."""
 import argparse
+import gzip
 import hashlib
 import platform
 import shutil
@@ -80,6 +81,25 @@ def local_smoke(executable):
         raise ValueError("native window did not complete a full 30-second run")
 
 
+def linux_archive(stage, archive):
+    def portable(entry):
+        if entry.isdir():
+            entry.mode = 0o755
+        elif entry.isfile():
+            entry.mode = 0o755 if Path(entry.name).name == "oops" else 0o644
+        else:
+            raise ValueError(f"unsupported archive entry: {entry.name}")
+        entry.uid = entry.gid = entry.mtime = 0
+        entry.uname = entry.gname = ""
+        return entry
+
+    # No dependence on the builder's umask, account name, or clock.
+    with archive.open("wb") as outer:
+        with gzip.GzipFile(filename="", fileobj=outer, mode="wb", mtime=0) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w") as out:
+                out.add(stage, arcname=stage.name, filter=portable)
+
+
 def main():
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--executable", type=Path, required=True)
@@ -139,8 +159,6 @@ def main():
         else:
             archive_exe = "oops.exe" if os_name == "windows" else "oops"
             shutil.copy2(executable, stage / archive_exe)
-        if os_name == "linux":
-            (stage / archive_exe).chmod(0o755)
         shutil.copyfile(ROOT / "LICENSE", stage / "LICENSE")
         shutil.copyfile(HERE / "README.txt", stage / "README.txt")
         (stage / "ARTWORK-LICENSE.txt").write_bytes(notice)
@@ -149,8 +167,7 @@ def main():
         )
         archive = work / (basename + ext)
         if os_name == "linux":
-            with tarfile.open(archive, "w:gz") as out:
-                out.add(stage, arcname=basename)
+            linux_archive(stage, archive)
         elif os_name == "macos":
             subprocess.run(
                 ["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent",
