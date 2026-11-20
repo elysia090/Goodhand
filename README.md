@@ -46,13 +46,11 @@ of its underlying geometry. See the [base and attr design](docs/generative-base.
 ## Playback
 
 On the Linux GTK3 desktop build, run `oops` from a normal shell to open
-**Island**, a separate Goodhand window with an opaque black pane by
-default. The artwork keeps its opaque dots and black-canvas grade.
-The appearance menu also offers a clear pane with interior reinforcement;
-the app never reads the desktop. Move the pointer inside the panel for
-its 1px outline. Drag from the upper middle to move, or drag the edges
-or lower-right corner to resize. Press q or Esc to close; successful
-playback adds no shell output.
+**Island**, a separate Goodhand window with a black background by default.
+The desktop provides the title bar, window buttons, and resize handles.
+Press t on a composited desktop to switch between black, lightly tinted,
+and clear backgrounds. The app never reads the desktop. Press q or Esc
+to close; successful playback adds no shell output.
 
 The source-only build has no embedded review archive. Use
 `oops --terminal` for the procedural terminal view; `--alternate-buffer`

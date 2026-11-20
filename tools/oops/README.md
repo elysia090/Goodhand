@@ -5,47 +5,25 @@
 Run `oops` from a normal shell in the optional Linux GTK3 desktop build.
 `--window` and `--island` explicitly select the same window. Press q or
 Esc to close, or use `oops --once` to stop after one turn. Successful
-playback does not write to the shell. This path has been checked on an
-Xfce composited GNU/Linux x86-64 desktop; it requires a composited RGBA
-visual, GTK3/GDK and Cairo.
+playback does not write to the shell. The window uses the desktop's
+standard title bar, border, buttons and resize handles. GTK3/GDK and
+Cairo are required; only the translucent appearances require a composited
+RGBA visual.
 
-The default pane is pure black. The foreground uses its black-canvas
-grade on the 200×120 source grid: at the starting size, a 2×2 mark per
-occupied point and a five-pixel pitch. Occupied marks are opaque,
-including black points. Inside the artwork only, a restrained black
-matte fills some gaps between occupied points, fading out toward the
-silhouette and open finger spaces. It doesn't change the dots' RGB or alpha, and it is invisible
-when composited over pure black. The app neither blurs the image nor
-reads the desktop.
+The default is a pure black 1016×445 client for the reviewed artwork,
+with no transparent gap between the canvas and the native frame.
+It keeps the source grid at its starting scale, with a little more
+headroom than space below the arm. Resizing fits the artwork
+without clipping or stretching. A faint gray reinforces existing dots
+in the lower forearm in black mode only; it changes neither geometry
+nor timing.
 
-- The one-pixel outline appears under the pointer and disappears when it
-  leaves.
-- To move the window, left-drag the upper middle about 24 pixels down
-  from the rim, outside the buttons.
-- To resize, left-drag the upper-left or lower-right corner, or an edge
-  where the resize cursor appears. GTK delegates the gesture to the
-  window manager. The clear pane's minimum window size is 840×420.
-  The aperture keeps its aspect without clipping or stretching, even in
-  a differently shaped window. Resizing changes only its display scale,
-  using nearest-neighbor transport, not the source grid or timing.
-- At the top right, hover for maximize/restore and close. At the bottom
-  left, hover for appearance. Those controls do not resize or move the
-  artwork.
-
-The reviewed black pane opens in a 1024×576 client with a 1016×462
-visible box inside. It uses tighter framing, a fixed leftward and
-slightly upward placement, and 5 px rounded corners on both fill and
-hover outline. Drag the visible black rim. A faint supporting gray
-inside the lower forearm is exclusive to the black pane. It changes
-only the tone of existing interior dots, not the source grid, native
-scale or time. A larger embedded scene can retain the wide framing
-rather than clip.
-
-Use the appearance controls or set `window_appearance` in the explicit
-config. `safe` is the default pure black pane. `clear` is the 1120×560
-transparent pane; `framed` uses the same size and a light translucent
-neutral fill, without blur. `--config`, `--once`, `--duration` and
-`--direction` apply to Island. Terminal framing flags do not.
+Press t to cycle appearances on a composited desktop, or set
+`window_appearance` in the config. `safe` is the default black,
+`clear` is transparent, and `framed` adds a lightly translucent
+neutral background. The native frame is the same in all three modes.
+`--config`, `--once`, `--duration` and `--direction` apply to Island.
+Terminal framing flags do not.
 
 The default 30-second turn schedules all 288 poses on its 24 Hz clock,
 holding them for three and two ticks in turn. Display refresh and actual
@@ -199,7 +177,7 @@ The optional archive build embeds a 200×120 GHSH occupancy and matching
 GHT8 gray pair, with 288 poses at 24 Hz. This requires the absolute path
 to an independently verified directory containing `shape.ghs` and
 `tone.ght` at build time. A missing or invalid explicit input fails
-the build. With a composited GTK3 desktop:
+the build. With a GTK3 desktop:
 
     GOODHAND_PLAYBACK_DIR=/absolute/path/to/verified-data \
       cargo build --offline --release --locked --features desktop-window

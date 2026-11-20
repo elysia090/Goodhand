@@ -1,10 +1,8 @@
 //! GTK presentation of the authored raster. Black-pane placement and support are display-only.
 mod bearing_tone;
-mod controls;
 mod interior_matte;
 mod sys;
 
-use self::controls::{Button, Controls, ResizeEdge};
 use self::interior_matte::InteriorMatte;
 use self::sys::*;
 use crate::archived_scene::pose_at_tick;
@@ -24,12 +22,10 @@ const PANEL_WIDTH: usize = 1120;
 const PANEL_HEIGHT: usize = 560;
 const BLACK_WIDTH: usize = 1016;
 const BLACK_HEIGHT: usize = 462;
-const BLACK_CLIENT: [usize; 2] = [1024, 576];
+const BLACK_BOTTOM: i32 = 8;
+const BLACK_EXTRA_TOP: i32 = 8;
 const BLACK_SHIFT: [i32; 2] = [-32, -8];
 const MIN_SCALE: f64 = 0.75;
-const PANEL_CORNER: f64 = 7.0;
-const BLACK_CORNER: f64 = 5.0;
-const START_PLACEMENT_GRACE: Duration = Duration::from_millis(300);
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct Canvas {
@@ -37,7 +33,6 @@ struct Canvas {
     height: usize,
     crop_top: i32,
     offset_x: i32,
-    inset: [usize; 2],
 }
 
 impl Canvas {
@@ -61,14 +56,13 @@ impl Canvas {
             height,
             crop_top: top,
             offset_x: shift[0],
-            inset: [0, 0],
         })
     }
 
     fn client_at(self, scale: f64) -> (c_int, c_int) {
         (
-            (scale * self.width as f64 + (2 * self.inset[0]) as f64).round() as c_int,
-            (scale * self.height as f64 + (2 * self.inset[1]) as f64).round() as c_int,
+            (scale * self.width as f64).round() as c_int,
+            (scale * self.height as f64).round() as c_int,
         )
     }
 
@@ -77,10 +71,7 @@ impl Canvas {
         // pixel-quantized aspect fit never drops below 0.75×.
         let height = (3 * self.height).div_ceil(4);
         let width = (height * self.width).div_ceil(self.height);
-        (
-            (width + 2 * self.inset[0]) as c_int,
-            (height + 2 * self.inset[1]) as c_int,
-        )
+        (width as c_int, height as c_int)
     }
 }
 
@@ -99,13 +90,11 @@ impl Apertures {
         // another embedded archive is too large, keep the wider-safe framing.
         let black = Canvas::frame(bounds, [BLACK_WIDTH, BLACK_HEIGHT], BLACK_SHIFT, 6)
             .map(|mut aperture| {
-                // The 16:9 starting client contains a visibly wide aperture.
-                // Transparent insets are fixed so a resize changes the
-                // fitted image without first spending the letterbox slack.
-                aperture.inset = [
-                    (BLACK_CLIENT[0] - BLACK_WIDTH) / 2,
-                    (BLACK_CLIENT[1] - BLACK_HEIGHT) / 2,
-                ];
+                // Keep the horizontal composition and the lower edge.
+                // Add headroom above the original black-pane framing.
+                let height = bounds.1[1] - aperture.crop_top + BLACK_BOTTOM;
+                aperture.crop_top -= BLACK_EXTRA_TOP;
+                aperture.height = aperture.height.min(height as usize) + BLACK_EXTRA_TOP as usize;
                 aperture
             })
             .unwrap_or(standard);
@@ -130,8 +119,8 @@ impl Placement {
     fn new(canvas: Canvas, width: c_int, height: c_int) -> Self {
         // Fit the selected aperture's aspect without stretching the artwork.
         // Integer arithmetic preserves the original 2:1 path exactly.
-        let available_width = (width - (2 * canvas.inset[0]) as c_int).max(0);
-        let available_height = (height - (2 * canvas.inset[1]) as c_int).max(0);
+        let available_width = width.max(0);
+        let available_height = height.max(0);
         let width_limited_height =
             (i64::from(available_width) * canvas.height as i64 / canvas.width as i64) as c_int;
         let panel_height = available_height.min(width_limited_height);
@@ -143,10 +132,6 @@ impl Placement {
             scale: f64::from(panel_height) / canvas.height as f64,
             origin: ((width - size.0) / 2, (height - size.1) / 2),
         }
-    }
-
-    fn point(self, x: f64, y: f64) -> (f64, f64) {
-        (x - f64::from(self.origin.0), y - f64::from(self.origin.1))
     }
 
     fn raster_origin(self, canvas: Canvas) -> (f64, f64) {
@@ -172,11 +157,10 @@ struct Window {
     foreground: [u32; 256],
     timeline: Timeline,
     time: Instant,
-    startup_placement: bool,
+    initial_size: Option<(c_int, c_int)>,
+    translucent: bool,
     pose: u32,
     error: Option<io::Error>,
-    controls: Controls,
-    resize_cursor: Option<ResizeEdge>,
 }
 
 impl Window {
@@ -200,11 +184,10 @@ impl Window {
             foreground: black_grade::palette().map(|rgb| argb(rgb, true)),
             timeline: Timeline { cycle, repeat },
             time: Instant::now(),
-            startup_placement: true,
+            initial_size: None,
+            translucent: false,
             pose: 0,
             error: None,
-            controls: Controls::default(),
-            resize_cursor: None,
         })
     }
 
@@ -232,8 +215,6 @@ impl Window {
                     gtk_window_resize(self.handle, width, height);
                 }
             }
-            self.controls.clear();
-            self.update_resize_cursor(None);
         }
     }
 
@@ -246,40 +227,6 @@ impl Window {
             )
         };
         Placement::new(self.canvas(), width, height)
-    }
-
-    fn control_point(&self, event: Ptr) -> Option<(i32, i32, f64, f64)> {
-        let (mut x, mut y) = (0., 0.);
-        if unsafe { gdk_event_get_coords(event, &mut x, &mut y) } == 0 {
-            return None;
-        }
-        let view = self.placement();
-        if view.scale == 0.0 {
-            return None;
-        }
-        let (x, y) = view.point(x, y);
-        Some((view.size.0, view.size.1, x, y))
-    }
-
-    fn update_resize_cursor(&mut self, edge: Option<ResizeEdge>) {
-        if edge == self.resize_cursor {
-            return;
-        }
-        // The widget and its display live for the event loop's lifetime.
-        unsafe {
-            let window = gtk_widget_get_window(self.handle);
-            if window.is_null() {
-                return;
-            }
-            let cursor = edge.map_or(null_mut(), |edge| {
-                gdk_cursor_new_from_name(gdk_window_get_display(window), edge.cursor().as_ptr())
-            });
-            gdk_window_set_cursor(window, cursor);
-            if !cursor.is_null() {
-                g_object_unref(cursor);
-            }
-        }
-        self.resize_cursor = edge;
     }
 
     fn update(&mut self, pose: u32) -> io::Result<()> {
@@ -328,18 +275,18 @@ pub(crate) fn run(repeat: Repeat, appearance: WindowAppearance, cycle: Cycle) ->
         if handle.is_null() {
             return Err(io::Error::other("GTK window creation failed"));
         }
-        {
-            let screen = gtk_widget_get_screen(handle);
-            let visual = gdk_screen_get_rgba_visual(screen);
-            if visual.is_null() || gdk_screen_is_composited(screen) == 0 {
-                gtk_widget_destroy(handle);
-                return Err(io::Error::other(
-                    "no composited RGBA surface; use oops --terminal",
-                ));
-            }
+        // Keep GTK's decorated top-level. The window manager owns chrome,
+        // movement, maximization and interactive resizing.
+        let screen = gtk_widget_get_screen(handle);
+        let visual = gdk_screen_get_rgba_visual(screen);
+        let translucent = !visual.is_null() && gdk_screen_is_composited(screen) != 0;
+        if translucent {
             gtk_widget_set_visual(handle, visual);
-            // Use the application rail and hover controls, not OS chrome.
-            gtk_window_set_decorated(handle, 0);
+        } else if appearance != WindowAppearance::Safe {
+            gtk_widget_destroy(handle);
+            return Err(io::Error::other(
+                "no composited RGBA surface; select the black window or use oops --terminal",
+            ));
         }
         let mut state =
             match Window::new(handle, repeat, appearance, cycle).and_then(|mut state| {
@@ -359,6 +306,8 @@ pub(crate) fn run(repeat: Repeat, appearance: WindowAppearance, cycle: Cycle) ->
         gtk_widget_set_size_request(handle, min_width, min_height);
         let (width, height) = canvas.client_at(1.0);
         gtk_window_set_default_size(handle, width, height);
+        state.initial_size = Some((width, height));
+        state.translucent = translucent;
         let data = std::ptr::from_mut(state.as_mut()).cast();
         // GTK expects a type-erased GCallback; these three signals all
         // invoke the C signature (widget, event/context, user_data) -> gint.
@@ -375,29 +324,6 @@ pub(crate) fn run(repeat: Repeat, appearance: WindowAppearance, cycle: Cycle) ->
                 None,
                 0,
             );
-        }
-        {
-            // Documented GdkEventMask bits: motion, primary press/release,
-            // enter and leave. Never query global pointer state.
-            const POINTER_EVENTS: c_int = (1 << 2) | (1 << 8) | (1 << 9) | (1 << 12) | (1 << 13);
-            gtk_widget_add_events(handle, POINTER_EVENTS);
-            for (name, callback) in [
-                (c"motion-notify-event", pointer as Signal),
-                (c"enter-notify-event", pointer as Signal),
-                (c"leave-notify-event", leave as Signal),
-                (c"button-press-event", press as Signal),
-                (c"button-release-event", release as Signal),
-                (c"window-state-event", leave as Signal),
-            ] {
-                g_signal_connect_data(
-                    handle,
-                    name.as_ptr(),
-                    std::mem::transmute::<Signal, Callback>(callback),
-                    data,
-                    None,
-                    0,
-                );
-            }
         }
         gtk_widget_show_all(handle);
         state.time = Instant::now();
@@ -421,120 +347,49 @@ unsafe extern "C" fn close(_widget: Ptr, _event: Ptr, _data: Ptr) -> c_int {
     1
 }
 
-unsafe extern "C" fn key(_widget: Ptr, event: Ptr, _data: Ptr) -> c_int {
+unsafe extern "C" fn key(widget: Ptr, event: Ptr, data: Ptr) -> c_int {
     let mut code: c_uint = 0;
     unsafe {
-        if gdk_event_get_keyval(event, &mut code) != 0 && matches!(code, 113 | 0xff1b) {
+        if gdk_event_get_keyval(event, &mut code) == 0 {
+            return 0;
+        }
+        if matches!(code, 113 | 0xff1b) {
             gtk_main_quit();
+            return 1;
+        }
+        let state = &mut *data.cast::<Window>();
+        if code == u32::from(b't')
+            && state.translucent
+            && gdk_screen_is_composited(gtk_widget_get_screen(widget)) != 0
+        {
+            let next = match state.appearance {
+                WindowAppearance::Safe => WindowAppearance::Framed,
+                WindowAppearance::Framed => WindowAppearance::Clear,
+                WindowAppearance::Clear => WindowAppearance::Safe,
+            };
+            state.select_appearance(next);
+            gtk_widget_queue_draw(widget);
             return 1;
         }
     }
     0
 }
 
-unsafe extern "C" fn pointer(widget: Ptr, event: Ptr, data: Ptr) -> c_int {
-    let state = unsafe { &mut *data.cast::<Window>() };
-    let next = state.control_point(event);
-    let edge = if unsafe { gtk_window_is_maximized(widget) } == 0 {
-        Controls::resize_edge(next)
-    } else {
-        None
-    };
-    state.update_resize_cursor(edge);
-    if state.controls.pointer(next) {
-        unsafe { gtk_widget_queue_draw(widget) };
-    }
-    0
-}
-
-unsafe extern "C" fn leave(widget: Ptr, _event: Ptr, data: Ptr) -> c_int {
-    let state = unsafe { &mut *data.cast::<Window>() };
-    state.update_resize_cursor(None);
-    if state.controls.clear() {
-        unsafe { gtk_widget_queue_draw(widget) };
-    }
-    0
-}
-
-unsafe extern "C" fn press(widget: Ptr, event: Ptr, data: Ptr) -> c_int {
-    let mut button = 0;
-    if unsafe { gdk_event_get_button(event, &mut button) } == 0 || button != 1 {
-        return 0;
-    }
-    let state = unsafe { &mut *data.cast::<Window>() };
-    let point = state.control_point(event);
-    if state.controls.press(point) {
-        unsafe { gtk_widget_queue_draw(widget) };
-        return 1;
-    }
-    if unsafe { gtk_window_is_maximized(widget) } == 0 {
-        let edge = Controls::resize_edge(point);
-        if edge.is_some() || Controls::may_drag(point) {
-            let (mut x, mut y) = (0., 0.);
-            // Use the initiating event's root coordinates and timestamp;
-            // GTK's window manager handles the move/resize gesture.
-            unsafe {
-                if gdk_event_get_root_coords(event, &mut x, &mut y) != 0 {
-                    let (x, y) = (x.round() as i32, y.round() as i32);
-                    let time = gdk_event_get_time(event);
-                    if let Some(edge) = edge {
-                        gtk_window_begin_resize_drag(widget, edge as c_int, 1, x, y, time);
-                    } else {
-                        gtk_window_begin_move_drag(widget, 1, x, y, time);
-                    }
-                    return 1;
-                }
-            }
-        }
-    }
-    0
-}
-
-unsafe extern "C" fn release(widget: Ptr, event: Ptr, data: Ptr) -> c_int {
-    let mut button = 0;
-    if unsafe { gdk_event_get_button(event, &mut button) } == 0 || button != 1 {
-        return 0;
-    }
-    let state = unsafe { &mut *data.cast::<Window>() };
-    let point = state.control_point(event);
-    let (handled, action) = state.controls.release(point);
-    unsafe {
-        match action {
-            Some(Button::Close) => gtk_main_quit(),
-            Some(Button::Resize) => {
-                // A user choice overrides the initial placement preference.
-                state.startup_placement = false;
-                if gtk_window_is_maximized(widget) != 0 {
-                    gtk_window_unmaximize(widget);
-                } else {
-                    gtk_window_maximize(widget);
-                }
-                gtk_widget_queue_draw(widget);
-            }
-            Some(Button::Appearance(appearance)) => {
-                state.select_appearance(appearance);
-                gtk_widget_queue_draw(widget);
-            }
-            None if handled => gtk_widget_queue_draw(widget),
-            None => (),
-        }
-    }
-    i32::from(handled)
-}
-
 unsafe extern "C" fn tick(data: Ptr) -> c_int {
     // GLib invokes timers serially on the GTK event-loop thread.
     let state: &mut Window = unsafe { &mut *data.cast::<Window>() };
     let elapsed = state.time.elapsed();
-    if state.startup_placement {
-        // Some window managers initially maximize even an undecorated
-        // window with a natural size. Request floating once after map,
-        // never override maximization during normal playback.
-        if elapsed > START_PLACEMENT_GRACE {
-            state.startup_placement = false;
+    // Honor the requested floating start size on a desktop that fits the
+    // mapped window to its work area. Never override later user resizing.
+    if let Some((w, h)) = state.initial_size {
+        if elapsed > Duration::from_millis(300) {
+            state.initial_size = None;
         } else if unsafe { gtk_window_is_maximized(state.handle) } != 0 {
-            state.startup_placement = false;
-            unsafe { gtk_window_unmaximize(state.handle) };
+            state.initial_size = None;
+            unsafe {
+                gtk_window_unmaximize(state.handle);
+                gtk_window_resize(state.handle, w, h);
+            }
         }
     }
     let Some(slot) = state.timeline.sample(elapsed) else {
@@ -555,23 +410,23 @@ unsafe extern "C" fn tick(data: Ptr) -> c_int {
     1
 }
 
-unsafe extern "C" fn draw(widget: Ptr, canvas: Ptr, data: Ptr) -> c_int {
+unsafe extern "C" fn draw(_widget: Ptr, canvas: Ptr, data: Ptr) -> c_int {
     let state: &mut Window = unsafe { &mut *data.cast::<Window>() };
     // Borrowed image memory stays valid through paint. Restoring the Cairo
     // state releases its source pattern before the image and slice can change.
     unsafe {
-        let maximized = gtk_window_is_maximized(widget) != 0;
         let view = state.placement();
         let layout = state.canvas();
         let (width, height) = view.size;
         let scale = view.scale;
-        let corner = match state.appearance {
-            WindowAppearance::Safe => BLACK_CORNER,
-            WindowAppearance::Clear | WindowAppearance::Framed => PANEL_CORNER,
+        let (shade, alpha) = match state.appearance {
+            WindowAppearance::Safe => (0., 1.0),
+            WindowAppearance::Framed => (0.04, 0.14),
+            WindowAppearance::Clear => (0., 0.),
         };
         cairo_save(canvas);
         cairo_set_operator(canvas, SOURCE);
-        cairo_set_source_rgba(canvas, 0., 0., 0., 0.);
+        cairo_set_source_rgba(canvas, shade, shade, shade, alpha);
         cairo_paint(canvas);
         if scale > 0.0 {
             let image = cairo_image_surface_create_for_data(
@@ -583,19 +438,6 @@ unsafe extern "C" fn draw(widget: Ptr, canvas: Ptr, data: Ptr) -> c_int {
             );
             if cairo_surface_status(image) == 0 {
                 cairo_translate(canvas, view.origin.0.into(), view.origin.1.into());
-                if state.appearance != WindowAppearance::Clear {
-                    // Fill precisely one neutral pane underneath unchanged
-                    // occupied marks. Nothing reaches outside the panel.
-                    let (shade, alpha) = match state.appearance {
-                        WindowAppearance::Safe => (0., 1.0),
-                        WindowAppearance::Framed => (0.04, 0.14),
-                        WindowAppearance::Clear => unreachable!(),
-                    };
-                    cairo_set_operator(canvas, OVER);
-                    panel_path(canvas, width.into(), height.into(), corner);
-                    cairo_set_source_rgba(canvas, shade, shade, shade, alpha);
-                    cairo_fill(canvas);
-                }
                 cairo_set_operator(canvas, OVER);
                 cairo_save(canvas);
                 cairo_rectangle(canvas, 0., 0., width.into(), height.into());
@@ -608,12 +450,6 @@ unsafe extern "C" fn draw(widget: Ptr, canvas: Ptr, data: Ptr) -> c_int {
                 cairo_rectangle(canvas, 0., 0., WIDTH as f64, HEIGHT as f64);
                 cairo_fill(canvas);
                 cairo_restore(canvas);
-                if state.controls.show_rail() {
-                    draw_panel_rail(canvas, width.into(), height.into(), corner);
-                }
-                state
-                    .controls
-                    .draw(canvas, width, height, maximized, state.appearance);
             } else {
                 state.error = Some(io::Error::other(
                     "Cairo could not create the raster surface",
@@ -627,37 +463,12 @@ unsafe extern "C" fn draw(widget: Ptr, canvas: Ptr, data: Ptr) -> c_int {
     1
 }
 
-/// Same rounded path for the pane underlay and its one-pixel boundary.
-unsafe fn panel_path(context: Ptr, width: f64, height: f64, r: f64) {
-    use std::f64::consts::{FRAC_PI_2, PI};
-    let (left, top) = (0.5, 0.5);
-    let (right, bottom) = (width - 0.5, height - 0.5);
-    unsafe {
-        cairo_new_sub_path(context);
-        cairo_arc(context, right - r, top + r, r, -FRAC_PI_2, 0.0);
-        cairo_arc(context, right - r, bottom - r, r, 0.0, FRAC_PI_2);
-        cairo_arc(context, left + r, bottom - r, r, FRAC_PI_2, PI);
-        cairo_arc(context, left + r, top + r, r, PI, PI + FRAC_PI_2);
-        cairo_close_path(context);
-    }
-}
-
-unsafe fn draw_panel_rail(context: Ptr, width: f64, height: f64, corner: f64) {
-    unsafe {
-        cairo_set_operator(context, OVER);
-        panel_path(context, width, height, corner);
-        cairo_set_line_width(context, 1.0);
-        cairo_set_source_rgba(context, 0.60, 0.60, 0.60, 0.34);
-        cairo_stroke(context);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn default_black_aperture_fits_native_art_in_the_sixteen_by_nine_client() {
+    fn default_black_aperture_adds_headroom_without_moving_the_bottom() {
         let a = Apertures::new(([47, 137], [954, 549])).unwrap();
         let black = a.for_appearance(WindowAppearance::default());
         assert_eq!(
@@ -666,17 +477,19 @@ mod tests {
         );
         assert_eq!(
             (black.width, black.height, black.crop_top),
-            (1016, 462, 120)
+            (1016, 445, 112)
         );
-        assert_eq!(black.client_at(1.0), (1024, 576));
-        let p = Placement::new(black, 1024, 576);
-        assert_eq!((p.size, p.scale, p.origin), ((1016, 462), 1.0, (4, 57)));
-        assert_eq!(p.raster_origin(black), (-24., -120.));
-        let narrower = Placement::new(black, 1023, 576);
-        let shorter = Placement::new(black, 1024, 575);
+        assert_eq!(black.client_at(1.0), (1016, 445));
+        let p = Placement::new(black, 1016, 445);
+        assert_eq!((p.size, p.scale, p.origin), ((1016, 445), 1.0, (0, 0)));
+        assert_eq!(p.raster_origin(black), (-24., -112.));
+        assert_eq!(137 - black.crop_top, 17 + BLACK_EXTRA_TOP);
+        assert_eq!(black.crop_top + black.height as i32 - 549, BLACK_BOTTOM);
+        let narrower = Placement::new(black, 1015, 445);
+        let shorter = Placement::new(black, 1016, 444);
         assert!(narrower.scale < 1.0 && shorter.scale < 1.0);
         let (min_width, min_height) = black.minimum();
-        assert_eq!((min_width, min_height), (772, 461));
+        assert_eq!((min_width, min_height), (763, 334));
         assert!(Placement::new(black, min_width, min_height).scale >= MIN_SCALE);
     }
 
@@ -697,7 +510,6 @@ mod tests {
             height: PANEL_HEIGHT,
             crop_top: 40,
             offset_x: 0,
-            inset: [0, 0],
         };
         for (width, height, panelsize, origin, scale) in [
             (1120, 560, (1120, 560), (0, 0), 1.0),
@@ -711,7 +523,6 @@ mod tests {
             let (x, y) = p.raster_origin(canvas);
             assert!((x + WIDTH as f64 * scale / 2.0 - f64::from(p.size.0) / 2.0).abs() < 1e-12);
             assert_eq!(y + f64::from(canvas.crop_top) * scale, 0.);
-            assert_eq!(p.point(f64::from(origin.0), f64::from(origin.1)), (0., 0.));
         }
     }
 
@@ -722,11 +533,7 @@ mod tests {
         for canvas in [a.standard, a.black] {
             for height in (3 * canvas.height).div_ceil(4)..=canvas.height {
                 let width = (height * canvas.width).div_ceil(canvas.height);
-                let p = Placement::new(
-                    canvas,
-                    (width + 2 * canvas.inset[0]) as i32,
-                    (height + 2 * canvas.inset[1]) as i32,
-                );
+                let p = Placement::new(canvas, width as i32, height as i32);
                 let ox = p.raster_origin(canvas);
                 for (axis, offset, count) in [(0, ox.0, 200), (1, ox.1, 120)] {
                     for point in 0..count {

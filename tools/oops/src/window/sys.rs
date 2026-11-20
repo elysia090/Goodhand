@@ -8,32 +8,13 @@ unsafe extern "C" {
     pub fn gtk_init_check(argc: *mut c_int, argv: *mut *mut *mut c_char) -> c_int;
     pub fn gtk_window_new(kind: c_int) -> Ptr;
     pub fn gtk_window_set_title(window: Ptr, title: *const c_char);
-    pub fn gtk_window_set_decorated(window: Ptr, setting: c_int);
     pub fn gtk_window_is_maximized(window: Ptr) -> c_int;
-    pub fn gtk_window_maximize(window: Ptr);
     pub fn gtk_window_unmaximize(window: Ptr);
-    pub fn gtk_window_begin_move_drag(
-        window: Ptr,
-        button: c_int,
-        root_x: c_int,
-        root_y: c_int,
-        timestamp: u32,
-    );
-    pub fn gtk_window_begin_resize_drag(
-        window: Ptr,
-        edge: c_int,
-        button: c_int,
-        root_x: c_int,
-        root_y: c_int,
-        timestamp: u32,
-    );
-    pub fn gtk_widget_add_events(widget: Ptr, events: c_int);
     pub fn gtk_widget_set_size_request(widget: Ptr, width: c_int, height: c_int);
     pub fn gtk_window_set_default_size(window: Ptr, width: c_int, height: c_int);
     pub fn gtk_window_resize(window: Ptr, width: c_int, height: c_int);
     pub fn gtk_widget_set_app_paintable(widget: Ptr, value: c_int);
     pub fn gtk_widget_get_screen(widget: Ptr) -> Ptr;
-    pub fn gtk_widget_get_window(widget: Ptr) -> Ptr;
     pub fn gtk_widget_set_visual(widget: Ptr, visual: Ptr);
     pub fn gtk_widget_show_all(widget: Ptr);
     pub fn gtk_widget_get_allocated_width(widget: Ptr) -> c_int;
@@ -49,18 +30,11 @@ unsafe extern "C" {
     pub fn gdk_screen_is_composited(screen: Ptr) -> c_int;
     pub fn gdk_screen_get_rgba_visual(screen: Ptr) -> Ptr;
     pub fn gdk_event_get_keyval(event: Ptr, keyval: *mut c_uint) -> c_int;
-    pub fn gdk_event_get_coords(event: Ptr, x: *mut c_double, y: *mut c_double) -> c_int;
-    pub fn gdk_event_get_button(event: Ptr, button: *mut c_uint) -> c_int;
-    pub fn gdk_event_get_root_coords(event: Ptr, x: *mut c_double, y: *mut c_double) -> c_int;
-    pub fn gdk_event_get_time(event: Ptr) -> u32;
-    pub fn gdk_window_get_display(window: Ptr) -> Ptr;
-    pub fn gdk_cursor_new_from_name(display: Ptr, name: *const c_char) -> Ptr;
-    pub fn gdk_window_set_cursor(window: Ptr, cursor: Ptr);
+
 }
 
 #[link(name = "libgobject-2.0.so.0", kind = "dylib", modifiers = "+verbatim")]
 unsafe extern "C" {
-    pub fn g_object_unref(object: Ptr);
     pub fn g_signal_connect_data(
         instance: Ptr,
         signal: *const c_char,
@@ -108,20 +82,6 @@ unsafe extern "C" {
     pub fn cairo_pattern_set_filter(pattern: Ptr, filter: c_int);
     pub fn cairo_rectangle(context: Ptr, x: c_double, y: c_double, w: c_double, h: c_double);
     pub fn cairo_clip(context: Ptr);
-    pub fn cairo_move_to(context: Ptr, x: c_double, y: c_double);
-    pub fn cairo_line_to(context: Ptr, x: c_double, y: c_double);
-    pub fn cairo_new_sub_path(context: Ptr);
-    pub fn cairo_arc(
-        context: Ptr,
-        cx: c_double,
-        cy: c_double,
-        radius: c_double,
-        start: c_double,
-        end: c_double,
-    );
-    pub fn cairo_close_path(context: Ptr);
-    pub fn cairo_set_line_width(context: Ptr, width: c_double);
-    pub fn cairo_stroke(context: Ptr);
     pub fn cairo_fill(context: Ptr);
     pub fn cairo_surface_destroy(surface: Ptr);
 }
