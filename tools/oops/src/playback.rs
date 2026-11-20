@@ -11,6 +11,8 @@ pub const BACKPRESSURE_POLL: Duration = Duration::from_millis(4);
 pub struct CycleDuration(u8);
 
 impl CycleDuration {
+    pub const WINDOW_DEFAULT: Self = Self(45);
+
     pub const fn seconds(self) -> u8 {
         self.0
     }

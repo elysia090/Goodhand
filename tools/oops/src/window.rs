@@ -5,6 +5,8 @@ mod gtk;
 mod interior_matte;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod portable;
+#[cfg(goodhand_native_motion)]
+mod wrist_tone;
 
 #[cfg(target_os = "linux")]
 pub(crate) use gtk::run;
@@ -12,7 +14,7 @@ pub(crate) use gtk::run;
 pub(crate) use portable::run;
 
 use self::interior_matte::InteriorMatte;
-use crate::black_grade;
+use crate::black_grade::{self, BACKDROP_RGB};
 use crate::playback::{Cycle, Repeat, Timeline};
 use crate::reference_frame::ReferenceFrame;
 use crate::settings::WindowAppearance;
@@ -31,7 +33,7 @@ const BLACK_BOTTOM: i32 = 8;
 const BLACK_EXTRA_TOP: i32 = 8;
 const BLACK_SHIFT: [i32; 2] = [-32, -8];
 #[cfg(any(target_os = "linux", test))]
-const MIN_SCALE: f64 = 0.75;
+const MIN_SCALE: f64 = 0.60;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct Canvas {
@@ -65,6 +67,7 @@ impl Canvas {
         })
     }
 
+    #[cfg(any(target_os = "linux", test))]
     fn client_at(self, scale: f64) -> (c_int, c_int) {
         (
             (scale * self.width as f64).round() as c_int,
@@ -72,12 +75,19 @@ impl Canvas {
         )
     }
 
-    fn minimum(self) -> (c_int, c_int) {
-        // Round the limiting axis up before deriving its width, so the
-        // pixel-quantized aspect fit never drops below 0.75×.
-        let height = (3 * self.height).div_ceil(4);
+    fn sized_by_height(self, height: usize) -> (c_int, c_int) {
         let width = (height * self.width).div_ceil(self.height);
         (width as c_int, height as c_int)
+    }
+
+    fn compact(self) -> (c_int, c_int) {
+        // About an 80×24 terminal footprint, without changing the aperture.
+        self.sized_by_height((13 * self.height).div_ceil(20))
+    }
+
+    fn minimum(self) -> (c_int, c_int) {
+        // At 0.60× even 2×2 source dots retain a nearest-neighbor sample.
+        self.sized_by_height((3 * self.height).div_ceil(5))
     }
 }
 
@@ -162,13 +172,15 @@ struct Artwork {
     foreground: [u32; 256],
     timeline: Timeline,
     pose: u32,
+    #[cfg(goodhand_native_motion)]
+    wrist: Option<wrist_tone::WristTone>,
 }
 
 impl Artwork {
     fn new(repeat: Repeat, appearance: WindowAppearance, cycle: Cycle) -> io::Result<Self> {
         let renderer = ReferenceFrame::new(cycle)?;
         let apertures = Apertures::new(renderer.occupied_bounds()?)?;
-        Ok(Self {
+        let art = Self {
             renderer,
             apertures,
             appearance,
@@ -179,7 +191,23 @@ impl Artwork {
             foreground: black_grade::palette().map(|rgb| argb(rgb, true)),
             timeline: Timeline { cycle, repeat },
             pose: 0,
-        })
+            #[cfg(goodhand_native_motion)]
+            wrist: None,
+        };
+        #[cfg(goodhand_native_motion)]
+        let art = {
+            let mut art = art;
+            if art.renderer.uses_reviewed_motion() {
+                // Base the gain on the opaque look even if Linux starts in
+                // a translucent mode; switching back later stays consistent.
+                art.appearance = WindowAppearance::Safe;
+                art.wrist = Some(wrist_tone::WristTone::prepare(&mut art)?);
+                art.appearance = appearance;
+                art.update(0)?;
+            }
+            art
+        };
+        Ok(art)
     }
 
     fn canvas(&self) -> Canvas {
@@ -204,16 +232,24 @@ impl Artwork {
     fn update(&mut self, pose: u32) -> io::Result<()> {
         self.renderer
             .render(pose, &mut self.light, Some(&mut self.alpha))?;
-        self.paint();
         self.pose = pose;
+        self.paint();
         Ok(())
     }
 
     fn paint(&mut self) {
         paint_dots(&self.light, &self.alpha, &self.foreground, &mut self.argb);
-        self.matte.apply(&self.light, &self.alpha, &mut self.argb);
         if self.appearance == WindowAppearance::Safe {
+            // Only dots color the opaque pane. Keep the depth measurement for
+            // the approved bearing tone, without adding a second backdrop.
+            self.matte.measure_depth(&self.alpha);
             bearing_tone::apply(&self.matte, &self.light, &mut self.argb);
+            #[cfg(goodhand_native_motion)]
+            if let Some(wrist) = &self.wrist {
+                wrist.apply(self.pose, &mut self.argb);
+            }
+        } else {
+            self.matte.apply(&self.light, &self.alpha, &mut self.argb);
         }
     }
 }
@@ -256,10 +292,10 @@ enum Frame {
 
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn copy_black_client(argb: &[u32], canvas: Canvas, output: &mut [u32]) {
-    const BLACK: u32 = 0xff00_0000;
+    let backdrop = backdrop_argb();
     // Integer coordinates at 1×, identical to the Cairo aperture. Native
     // backends receive only the opaque client and scale it if resized.
-    output.fill(BLACK);
+    output.fill(backdrop);
     let offset_x = (canvas.width as i32 - WIDTH as i32) / 2 + canvas.offset_x;
     let offset_y = -canvas.crop_top;
     let src_x = (-offset_x).max(0) as usize;
@@ -279,14 +315,41 @@ fn copy_black_client(argb: &[u32], canvas: Canvas, output: &mut [u32]) {
             .iter_mut()
             .zip(&argb[src..src + width])
         {
-            *to = BLACK | pixel;
+            *to = over_backdrop(pixel, backdrop);
         }
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn backdrop_argb() -> u32 {
+    argb(BACKDROP_RGB, true)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn over_backdrop(pixel: u32, backdrop: u32) -> u32 {
+    let src = pixel.to_be_bytes();
+    if src[0] == 255 {
+        return pixel;
+    }
+    let op = 255 - u16::from(src[0]);
+    let bg = backdrop.to_be_bytes();
+    let channel = |i: usize| src[i] + ((u16::from(bg[i]) * op + 127) / 255) as u8;
+    u32::from_be_bytes([255, channel(1), channel(2), channel(3)])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tinted_backdrop_does_not_modify_opaque_artwork() {
+        let bg = backdrop_argb();
+        assert_eq!(bg, 0xff0c_1012);
+        assert_eq!(over_backdrop(0, bg), bg);
+        assert_eq!(over_backdrop(0xff02_1118, bg), 0xff02_1118);
+        assert_eq!(over_backdrop(0xc000_0000, bg), 0xff03_0404);
+        assert_eq!(over_backdrop(0x8000_0000, bg), 0xff06_0809);
+    }
 
     #[test]
     fn client_pixels_match_each_approved_placement_on_black() {
@@ -307,12 +370,52 @@ mod tests {
                         if (0..WIDTH as i32).contains(&ox) && (0..HEIGHT as i32).contains(&oy) {
                             src[oy as usize * WIDTH + ox as usize]
                         } else {
-                            0xff00_0000
+                            backdrop_argb()
                         };
                     assert_eq!(pixel, expected);
                 }
             }
         }
+    }
+
+    #[test]
+    fn forty_five_second_turn_shows_exactly_540_uniform_phases() {
+        use crate::playback::CycleDuration;
+        use crate::reference_frame::{motion_pose_at_tick, motion_tick};
+        let cycle = Cycle {
+            duration: CycleDuration::WINDOW_DEFAULT,
+            ..Cycle::default()
+        };
+        let timeline = Timeline {
+            cycle,
+            repeat: Repeat::Loop,
+        };
+        for pose in 0..540 {
+            let step = Duration::from_nanos((pose * 1_000_000_000_u64).div_ceil(12));
+            assert_eq!(motion_tick(timeline, step), Some(pose));
+            assert_eq!(motion_pose_at_tick(cycle, pose), Some(pose as u32));
+            assert_eq!(
+                motion_tick(timeline, Duration::from_secs(45) + step),
+                Some(pose)
+            );
+            if pose > 0 {
+                assert_eq!(
+                    motion_tick(timeline, step - Duration::from_nanos(1)),
+                    Some(pose - 1)
+                );
+            }
+        }
+        assert_eq!(motion_tick(timeline, Duration::from_secs(45)), Some(0));
+        assert_eq!(
+            motion_tick(
+                Timeline {
+                    repeat: Repeat::Once,
+                    ..timeline
+                },
+                Duration::from_secs(45)
+            ),
+            None
+        );
     }
 
     #[test]
@@ -453,7 +556,10 @@ mod tests {
         let shorter = Placement::new(black, 1016, 444);
         assert!(narrower.scale < 1.0 && shorter.scale < 1.0);
         let (min_width, min_height) = black.minimum();
-        assert_eq!((min_width, min_height), (763, 334));
+        assert_eq!((min_width, min_height), (610, 267));
+        let (w, h) = black.compact();
+        assert_eq!((w, h), (663, 290));
+        assert_eq!(Placement::new(black, w, h).scale, 290.0 / 445.0);
         assert!(Placement::new(black, min_width, min_height).scale >= MIN_SCALE);
     }
 
@@ -462,7 +568,7 @@ mod tests {
         let a = Apertures::new(([47, 90], [954, 590])).unwrap();
         let clear = a.for_appearance(WindowAppearance::Clear);
         assert_eq!(clear.client_at(1.0), (1120, 560));
-        assert_eq!(clear.minimum(), (840, 420));
+        assert_eq!(clear.minimum(), (672, 336));
         assert!(a.for_appearance(WindowAppearance::Framed) == clear);
         assert!(a.for_appearance(WindowAppearance::Safe) == clear);
     }
@@ -495,7 +601,7 @@ mod tests {
         let spec = RasterSpec::REFERENCE;
         let a = Apertures::new(([47, 137], [954, 549])).unwrap();
         for canvas in [a.standard, a.black] {
-            for height in (3 * canvas.height).div_ceil(4)..=canvas.height {
+            for height in canvas.minimum().1 as usize..=canvas.height {
                 let width = (height * canvas.width).div_ceil(canvas.height);
                 let p = Placement::new(canvas, width as i32, height as i32);
                 let ox = p.raster_origin(canvas);
@@ -530,6 +636,11 @@ mod tests {
             }
             changes += 1;
             let [aa, ar, ag, ab] = before.to_be_bytes();
+            if aa < 255 {
+                // Opaque mode does not shade the plain backdrop around dots.
+                assert_eq!(black, 0);
+                continue;
+            }
             let [ba, br, bg, bb] = black.to_be_bytes();
             assert_eq!((aa, ba), (255, 255));
             let gain = br - ar;

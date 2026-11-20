@@ -129,7 +129,7 @@ fn native_desktop(target_os: &str, output: &Path) -> io::Result<()> {
                 "/nologo", "/TC", "/std:c11", "/W4", "/WX", "/O2", "/Zl", "/c", src,
             ])
             .arg(target);
-            for lib in ["user32", "gdi32", "kernel32"] {
+            for lib in ["user32", "gdi32", "kernel32", "dwmapi"] {
                 println!("cargo:rustc-link-lib={lib}");
             }
             (cmd, object)

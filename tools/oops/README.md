@@ -1,4 +1,4 @@
-# oops 0.0.1 · playback pilot
+# oops 0.0.2 · playback
 
 ### Island: an independent desktop window
 
@@ -10,34 +10,56 @@ playback does not write to the shell. The window uses the desktop's
 standard title bar, border, buttons and resize handles. Linux needs
 GTK3/GDK and Cairo. Windows and macOS use their system frameworks.
 
-The default is a pure black 1016×445 client for the reviewed artwork,
-with no transparent gap between the canvas and the native frame.
-It keeps the source grid at its starting scale, with a little more
-headroom than space below the arm. Resizing fits the artwork
-without clipping or stretching. A faint gray reinforces existing dots
-in the lower forearm in black mode only; it changes neither geometry
-nor timing.
+For the reviewed artwork, the default client is 663×290, close to an
+80×24 terminal's visual footprint with the native frame on. The original
+1016×445 aperture is still used for composition, fitted without clipping
+or stretching. The opaque pane is cool near-black (`#0C1012`); the arm
+uses neutral grayscale. The lit form, medium tone and key highlight
+use `#6C6C6C`, `#A0A0A0` and `#E0E0E0`, the colors obtained from
+[Material Design 2's dark theme](https://m2.material.io/design/color/dark-theme.html)
+white foreground opacities (38%, 60%, 87%) on its reference `#121212`.
+These anchors contrast about 3.64:1, 7.31:1 and 14.48:1 against our pane.
+The mapping applies the reference to artwork; this is not an
+accessibility compliance claim, and dark detail has lower contrast.
+A local wrist highlight adjustment follows the reviewed phases without
+changing the silhouette, the pane or the embedded artwork archive.
+
+The real window frame and its hit targets are always present. Under
+Xfwm on X11, the opaque pane hides the native decorations visually when
+idle. Hover or use the keyboard to reveal the real title bar and buttons
+without moving or resizing the artwork. Other Linux window managers,
+Wayland, the HighContrast GTK theme and translucent modes keep their
+usual visible decorations.
+
+The Windows 11 candidate keeps the Win32 frame and uses a
+click-through color mask over its caption at rest. Pointer and
+keyboard use reveal the genuine caption buttons and system menu
+without changing the client rectangle. Windows draws those controls.
+The masked mode uses square native window corners to contain its
+caption mask. Older Windows, high contrast and unsupported systems keep
+their regular visible chrome. Interactive Windows testing is separate
+from the build and CLI checks.
 
 On a composited Linux desktop, press t to cycle appearances, or set
 `window_appearance` in the config. Windows and macOS support the black
 `safe` appearance; they report an error for the other appearances.
-On Linux, `safe` is black,
-`clear` is transparent, and `framed` adds a lightly translucent
-neutral background. The native frame is the same in all three modes.
+On Linux, `safe` is opaque near-black, `clear` is transparent, and
+`framed` adds a lightly translucent neutral background. The native
+frame is the same in all three modes.
 `--config`, `--once`, `--duration` and `--direction` apply to Island.
 Terminal framing flags do not.
 
-The reviewed W5 window defaults to a 30-second turn with 540 distinct
-artwork phases, one per tick on an 18 Hz timeline. The motion archive
-contains additional shapes and tones on the same point grid, not frame
-holds or crossfades. The native window follows the absolute timeline;
-monitor refresh and the compositor determine exact presentation times.
-In the distributable build, other turn lengths sample the same motion
-archive at the selected speed. In a W4/W5 developer build, other turn
-lengths and desktop builds without W5 keep the original 24 Hz schedule
-of 288 archived poses. The
-[gray backdrop reference](../../reference/gray-backdrop/) is offline and
-does not change the appearance of Island.
+Current source builds pace the reviewed W5 window's 540 phases evenly
+over a default 45-second turn: 12 distinct artwork phases per second,
+with no frame blending or alternating holds. Use `--duration 30` for
+18 phases per second. The exact cadence is subject to display refresh.
+The shipped v0.0.1 native binaries default to 30 seconds.
+
+The distributable source build samples the same motion archive for
+other durations. W4/W5 developer builds use the motion archive for
+the 30- and 45-second turns, keeping the original archive for other
+durations. The [gray backdrop reference](../../reference/gray-backdrop/)
+is offline and does not change the appearance of Island.
 
 ### Terminal fallback
 
@@ -83,11 +105,12 @@ terminal playback needs external video, Python, or FFmpeg once built.
   over TTY measurements throughout the run. Recheck it after a font
   change that changes the cell proportions.
 - `--duration SECONDS` selects 12 through 60 whole seconds for one turn.
-  On the original 24 Hz timeline, each archived pose starts at the
+  The current native default is 45 seconds. The terminal default remains
+  30 seconds. On the original 24 Hz timeline, each archived pose starts at the
   nearest tick to its equally spaced time (ties round up), so every
   pose has at least one scheduled tick. A slow terminal may still miss
   submissions. The reviewed developer window uses the motion archive at
-  30 seconds and the original archived schedule at other durations. The
+  30 and 45 seconds and the original archived schedule at other durations. The
   distributable window uses the motion archive at every duration. The
   procedural terminal developer scene samples the corresponding yaw on
   each tick.
@@ -218,7 +241,7 @@ the **exact reviewed W4 occupancy and tone pair**. The source W5
 correction changes gray codes at the reviewed angles, not occupancy. In
 Island, only the signed correction is transferred from the calibrated
 view to occupied native dots; their original values are not averaged
-into terminal-cell tones. For the 30-second turn, Island uses the private
+into terminal-cell tones. For 30- and 45-second turns, Island uses the private
 W5 motion archive, with additional sampled shapes and tones between
 reviewed phases. The motion archive must match the approved window
 bounds and uses the same display grade.

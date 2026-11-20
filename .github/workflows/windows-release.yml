@@ -3,12 +3,8 @@ name: Windows x64 release build
 on:
   workflow_dispatch:
     inputs:
-      release_id:
-        description: Numeric GitHub draft release ID for v0.0.1
-        type: string
-        required: true
-      linux_asset_id:
-        description: Numeric asset ID for the approved Linux x64 release archive
+      source_sha:
+        description: Exact source commit SHA to build for v0.0.2
         type: string
         required: true
 
@@ -16,18 +12,29 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-release-v0.0.1
+  group: windows-release-v0.0.2
   cancel-in-progress: false
 
 jobs:
   build:
-    if: github.repository == 'elysia090/Goodhand' && github.ref == 'refs/heads/main'
+    if: >-
+      github.repository == 'elysia090/Goodhand' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release/oops-v0.0.2')
     runs-on: windows-2025
     timeout-minutes: 20
     env:
       TOOLCHAIN: "1.100.0-x86_64-pc-windows-msvc"
       CARGO_TERM_COLOR: always
     steps:
+      - name: Confirm the release source
+        shell: pwsh
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if ($env:SOURCE_SHA -cnotmatch '^[a-f0-9]{40}$' -or
+              $env:SOURCE_SHA -cne $env:GITHUB_SHA) {
+              throw "The selected branch commit does not match the requested release source SHA"
+          }
       - name: Set release paths on the runner
         shell: pwsh
         run: |
@@ -51,47 +58,16 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Retrieve the pinned approved release binary
+      - name: Retrieve the existing release's artwork carrier
         shell: pwsh
-        env:
-          RELEASE_ID: ${{ inputs.release_id }}
-          LINUX_ASSET_ID: ${{ inputs.linux_asset_id }}
-          GH_TOKEN: ${{ github.token }}
         run: |
-          if ($env:RELEASE_ID -cnotmatch '^[1-9][0-9]{0,14}$' -or
-              $env:LINUX_ASSET_ID -cnotmatch '^[1-9][0-9]{0,14}$') {
-              throw "Use numeric release and asset IDs"
-          }
-          $headers = @{
-              Authorization = "Bearer $env:GH_TOKEN"
-              Accept = "application/vnd.github+json"
-              "X-GitHub-Api-Version" = "2022-11-28"
-          }
-          $baseUrl = "${env:GITHUB_API_URL}/repos/${env:GITHUB_REPOSITORY}/releases"
-          try {
-              $draft = Invoke-RestMethod -ErrorAction Stop -TimeoutSec 20 -Method Get `
-                  -Uri "$baseUrl/$env:RELEASE_ID" -Headers $headers
-          } catch {
-              throw "The specified draft release is not readable with the workflow's read-only token"
-          }
-          if ($draft.id -ne [long]$env:RELEASE_ID -or -not $draft.draft -or $draft.tag_name -cne "v0.0.1") {
-              throw "The source must be the v0.0.1 draft release"
-          }
-          $asset = @($draft.assets | Where-Object { $_.id -eq [long]$env:LINUX_ASSET_ID })
-          if ($asset.Count -ne 1 -or $asset[0].name -cne "oops-v0.0.1-linux-x64.tar.gz" -or
-              $asset[0].state -ne "uploaded") {
-              throw "The selected Linux x64 archive is not in that draft release"
-          }
           New-Item -ItemType Directory -Path "$env:GOODHAND_INPUT_DIR" | Out-Null
           $archive = Join-Path "$env:GOODHAND_INPUT_DIR" "oops-v0.0.1-linux-x64.tar.gz"
-          # curl forwards the Authorization header only to the original host.
+          $url = "https://github.com/elysia090/Goodhand/releases/download/v0.0.1/oops-v0.0.1-linux-x64.tar.gz"
           curl.exe --fail --silent --show-error --location --proto '=https' --proto-redir '=https' `
               --connect-timeout 10 --max-time 60 --max-filesize 16777216 `
-              --header "Authorization: Bearer $env:GH_TOKEN" `
-              --header "Accept: application/octet-stream" `
-              --header "X-GitHub-Api-Version: 2022-11-28" `
-              --output "$archive" "$baseUrl/assets/$env:LINUX_ASSET_ID"
-          if ($LASTEXITCODE) { throw "Could not download the approved archive" }
+              --output "$archive" "$url"
+          if ($LASTEXITCODE) { throw "Could not download the existing approved archive" }
 
       - name: Verify and stage approved embedded artwork
         shell: pwsh
@@ -142,6 +118,7 @@ jobs:
               --artwork-notice "$env:GOODHAND_INPUT_DIR/artwork/ARTWORK-LICENSE.txt" `
               --output "$env:GOODHAND_PACKAGE_DIR"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "Source commit: $env:GITHUB_SHA" >> $env:GITHUB_STEP_SUMMARY
           "Native artwork build, not a completed desktop smoke test." >> $env:GITHUB_STEP_SUMMARY
 
       - name: Remove staged artwork and build intermediates
@@ -157,9 +134,9 @@ jobs:
       - name: Upload only the Windows archive and checksum
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: oops-v0.0.1-windows-x64
+          name: oops-v0.0.2-windows-x64
           path: |
-            ${{ env.GOODHAND_PACKAGE_DIR }}/oops-v0.0.1-windows-x64.zip
-            ${{ env.GOODHAND_PACKAGE_DIR }}/oops-v0.0.1-windows-x64.zip.sha256
+            ${{ env.GOODHAND_PACKAGE_DIR }}/oops-v0.0.2-windows-x64.zip
+            ${{ env.GOODHAND_PACKAGE_DIR }}/oops-v0.0.2-windows-x64.zip.sha256
           if-no-files-found: error
           retention-days: 3

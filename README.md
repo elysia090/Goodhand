@@ -1,11 +1,11 @@
 # Goodhand
 
-**oops** is a rotating hand in its own window. A turn takes 30 seconds,
-with 540 distinct artwork phases at 18 fps. The black canvas preserves the
-original point grid and the familiar window frame belongs to your desktop.
+**oops** is a rotating hand in its own window. In v0.0.2 the compact
+window defaults to a 45-second turn with 540 distinct artwork phases.
+The neutral artwork and native window frame keep the focus on the hand.
 
-[![Source version: v0.0.1](https://img.shields.io/badge/source-v0.0.1-lightgrey?style=flat)](https://github.com/elysia090/Goodhand/releases)
-[![Playback: 18 fps](https://img.shields.io/badge/playback-18%20fps-blue?style=flat)](#open-oops)
+[![Source version: v0.0.2](https://img.shields.io/badge/source-v0.0.2-lightgrey?style=flat)](https://github.com/elysia090/Goodhand/releases)
+[![Playback: 45 s per turn](https://img.shields.io/badge/playback-45%20s%20per%20turn-blue?style=flat)](#open-oops)
 [![Chip targets: x64 and ARM64](https://img.shields.io/badge/targets-x64%20%7C%20ARM64-informational?style=flat)](#downloads)
 [![Software license: MIT](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
 
@@ -20,7 +20,7 @@ the project.
 | --- | --- | --- | --- |
 | Linux | `x64` · Intel / AMD | Reviewed artwork ran on native Xfce | See Releases |
 | Linux | `ARM64` · 64-bit Arm | Synthetic CI only | Pending native check |
-| Windows | `x64` · Intel / AMD | Synthetic CI; native verification separate | See Releases |
+| Windows | `x64` · Intel / AMD | Build and CLI checks; interactive behavior not verified | See Releases |
 | Windows | `ARM64` · 64-bit Arm | Synthetic CI only | Pending native check |
 | macOS | `x64` · Intel Mac | Synthetic CI only | On hold |
 | macOS | `ARM64` · Apple silicon | Synthetic CI only | On hold |
@@ -40,8 +40,10 @@ for native verification and signing.
    or later.
 3. Resize the window to fit. Close it, or press **q** or **Esc**, to stop.
 
-To play one 30-second turn and exit, run `./oops --once` on Linux or
-`.\oops.exe --once` in PowerShell on Windows.
+To play one 45-second turn and exit, run `./oops --once` on Linux or
+`.\oops.exe --once` in PowerShell on Windows. Add `--duration 30` to
+use the earlier 30-second pace. The 540 phases are scheduled at 12 per
+second by default or 18 per second for the 30-second turn.
 
 The app does not need a terminal to play, a video player, or a network
 connection. A busy desktop compositor can skip displayed frames.
@@ -52,6 +54,10 @@ This repository contains a Rust library for shape, point tones, timing and
 placement; the `oops` player; and offline tooling. A clean checkout does
 not contain the reviewed release artwork. The Linux x64 terminal developer
 preview is separate from the reviewed native artwork.
+
+The compact dark pane uses Material dark-theme foreground references
+and a localized wrist tone adjustment, without changing the artwork
+archive. The original v0.0.1 release remains available.
 
 - [Build and playback options](tools/oops/README.md)
 - [Library, development checks and offline workflow](docs/development.md)

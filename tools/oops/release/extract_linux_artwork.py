@@ -9,6 +9,7 @@ from pathlib import Path
 
 from package import MOTION_DIGESTS
 
+# The existing v0.0.1 Linux x64 binary carries the same approved artwork.
 ARCHIVE_SHA256 = "378c1e3830a17b821755e2bf5079077346376782c88cc7f004ad025dc479fd31"
 EXECUTABLE_SHA256 = "56961c0c275e53bbeeaff6b92eb63f7f367a26a4a30746643ab4d7baf85eb750"
 PREFIX = "oops-v0.0.1-linux-x64"
@@ -82,7 +83,7 @@ def main():
         prepare(args.archive, args.output)
     except (OSError, ValueError, tarfile.TarError) as err:
         cli.exit(1, f"artwork: {err}\n")
-    print("Verified both final 18 Hz artwork inputs and the included notice")
+    print("Verified both final 540-phase artwork inputs and the included notice")
 
 
 if __name__ == "__main__":

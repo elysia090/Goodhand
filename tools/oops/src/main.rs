@@ -41,7 +41,7 @@ use std::process::ExitCode;
 const HELP: &str = "oops 0.0.1
 
 Open an independent Goodhand window (desktop build).
-Playback loops in 30 seconds; press q or Esc to close the window.
+The window loops in 45 seconds; press q or Esc to close.
 
 Usage: oops [--window | --island] [--config PATH] [--once] [TURN OPTIONS]
        oops --terminal [--alternate-buffer] [--config PATH] [--once] [OPTIONS]
@@ -56,7 +56,7 @@ Usage: oops [--window | --island] [--config PATH] [--once] [TURN OPTIONS]
   --measure             Play and print process timing after restoring the shell.
   --once                Stop after one turn instead of looping.
   --config PATH         Read settings from this explicit file.
-  --duration SECONDS    12–60 whole seconds (default 30).
+  --duration SECONDS    12–60 whole seconds (window 45, terminal 30 by default).
   --direction DIR       reverse (default) or forward; same opening pose.
   --zoom PERCENT        Terminal: 50–200; 100 fits the full turn.
   --cell-aspect ASPECT  Terminal: auto or cell width/height from 0.30 to 0.85.
@@ -180,7 +180,11 @@ fn parse_args(mut args: impl Iterator<Item = OsString>) -> Result<Options, Strin
 impl Options {
     fn settings(self) -> Result<Settings, String> {
         let file = self.config.as_deref().map(read_config).transpose()?;
-        let defaults = file.unwrap_or_default().apply(Settings::default());
+        let mut defaults = Settings::default();
+        if matches!(self.mode, Mode::Play | Mode::Window) {
+            defaults.cycle.duration = playback::CycleDuration::WINDOW_DEFAULT;
+        }
+        let defaults = file.unwrap_or_default().apply(defaults);
         Ok(self.overrides.apply(defaults))
     }
 }
@@ -276,6 +280,44 @@ mod tests {
 
     fn args(values: &[&str]) -> Result<Options, String> {
         parse_args(values.iter().map(OsString::from))
+    }
+
+    #[cfg(any(
+        goodhand_desktop_artwork,
+        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+    ))]
+    #[test]
+    fn window_duration_defaults_to_45_but_terminal_and_overrides_hold() {
+        assert_eq!(
+            args(&[])
+                .unwrap()
+                .settings()
+                .unwrap()
+                .cycle
+                .duration
+                .seconds(),
+            45
+        );
+        assert_eq!(
+            args(&["--terminal"])
+                .unwrap()
+                .settings()
+                .unwrap()
+                .cycle
+                .duration
+                .seconds(),
+            30
+        );
+        assert_eq!(
+            args(&["--duration", "30"])
+                .unwrap()
+                .settings()
+                .unwrap()
+                .cycle
+                .duration
+                .seconds(),
+            30
+        );
     }
 
     #[test]

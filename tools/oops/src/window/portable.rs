@@ -1,6 +1,6 @@
 //! Main-thread bridge to the Win32 and AppKit window hosts.
 
-use super::{Artwork, Canvas, Frame, copy_black_client};
+use super::{Artwork, Canvas, Frame, backdrop_argb, copy_black_client};
 use crate::playback::{Cycle, Repeat};
 use crate::settings::WindowAppearance;
 use std::ffi::c_void;
@@ -14,8 +14,11 @@ unsafe extern "C" {
         context: *mut c_void,
         width: u32,
         height: u32,
+        client_width: u32,
+        client_height: u32,
         min_width: u32,
         min_height: u32,
+        background: u32,
         update: Update,
     ) -> i32;
 }
@@ -37,7 +40,7 @@ pub(crate) fn run(repeat: Repeat, appearance: WindowAppearance, cycle: Cycle) ->
     let mut art = Artwork::new(repeat, appearance, cycle)?;
     art.update(0)?;
     let canvas = art.canvas();
-    let (width, height) = canvas.client_at(1.0);
+    let (client_width, client_height) = canvas.compact();
     let (min_width, min_height) = canvas.minimum();
     let mut presenter = Presenter {
         pixels: vec![0; canvas.width * canvas.height].into_boxed_slice(),
@@ -54,10 +57,13 @@ pub(crate) fn run(repeat: Repeat, appearance: WindowAppearance, cycle: Cycle) ->
     let status = unsafe {
         goodhand_run_platform(
             std::ptr::from_mut(&mut presenter).cast(),
-            width as u32,
-            height as u32,
+            canvas.width as u32,
+            canvas.height as u32,
+            client_width as u32,
+            client_height as u32,
             min_width as u32,
             min_height as u32,
+            backdrop_argb(),
             advance,
         )
     };

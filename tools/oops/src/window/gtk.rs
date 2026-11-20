@@ -1,9 +1,11 @@
 //! Linux GTK3 presentation.
+#[path = "chrome_x11.rs"]
+mod chrome_x11;
 #[path = "sys.rs"]
 mod sys;
 
 use self::sys::*;
-use super::{Artwork, Frame, HEIGHT, MIN_SCALE, Placement, WIDTH};
+use super::{Artwork, BACKDROP_RGB, Frame, HEIGHT, MIN_SCALE, Placement, WIDTH};
 use crate::playback::{Cycle, Repeat};
 use crate::settings::WindowAppearance;
 use std::ffi::{c_int, c_uint};
@@ -20,6 +22,7 @@ struct Window {
     once_timeout: Option<c_uint>,
     initial_size: Option<(c_int, c_int)>,
     translucent: bool,
+    chrome: chrome_x11::Chrome,
     error: Option<io::Error>,
 }
 
@@ -37,6 +40,7 @@ impl Window {
             once_timeout: None,
             initial_size: None,
             translucent: false,
+            chrome: chrome_x11::Chrome::default(),
             error: None,
         })
     }
@@ -47,6 +51,9 @@ impl Window {
         let regrade = (self.art.appearance == WindowAppearance::Safe)
             != (appearance == WindowAppearance::Safe);
         self.art.appearance = appearance;
+        if appearance != WindowAppearance::Safe {
+            self.chrome.hide();
+        }
         if regrade {
             self.art.paint();
         }
@@ -119,7 +126,7 @@ pub(crate) fn run(repeat: Repeat, appearance: WindowAppearance, cycle: Cycle) ->
         let canvas = state.art.canvas();
         let (min_width, min_height) = canvas.minimum();
         gtk_widget_set_size_request(handle, min_width, min_height);
-        let (width, height) = canvas.client_at(1.0);
+        let (width, height) = canvas.compact();
         gtk_window_set_default_size(handle, width, height);
         state.initial_size = Some((width, height));
         state.translucent = translucent;
@@ -130,6 +137,7 @@ pub(crate) fn run(repeat: Repeat, appearance: WindowAppearance, cycle: Cycle) ->
             (c"draw", draw as Signal),
             (c"delete-event", close as Signal),
             (c"key-press-event", key as Signal),
+            (c"focus-in-event", focus as Signal),
         ] {
             g_signal_connect_data(
                 handle,
@@ -151,6 +159,7 @@ pub(crate) fn run(repeat: Repeat, appearance: WindowAppearance, cycle: Cycle) ->
             g_source_remove(timeout);
         }
         gtk_widget_remove_tick_callback(handle, callback);
+        state.chrome.destroy();
         gtk_widget_destroy(handle);
         if let Some(error) = state.error.take() {
             return Err(error);
@@ -164,6 +173,12 @@ unsafe extern "C" fn close(_widget: Ptr, _event: Ptr, _data: Ptr) -> c_int {
     1
 }
 
+unsafe extern "C" fn focus(_widget: Ptr, _event: Ptr, data: Ptr) -> c_int {
+    let state: &mut Window = unsafe { &mut *data.cast::<Window>() };
+    state.chrome.reveal_for_keyboard();
+    0
+}
+
 unsafe extern "C" fn key(widget: Ptr, event: Ptr, data: Ptr) -> c_int {
     let mut code: c_uint = 0;
     unsafe {
@@ -175,6 +190,7 @@ unsafe extern "C" fn key(widget: Ptr, event: Ptr, data: Ptr) -> c_int {
             return 1;
         }
         let state = &mut *data.cast::<Window>();
+        state.chrome.reveal_for_keyboard();
         if code == u32::from(b't')
             && state.translucent
             && gdk_screen_is_composited(gtk_widget_get_screen(widget)) != 0
@@ -231,6 +247,11 @@ unsafe extern "C" fn tick(_widget: Ptr, _clock: Ptr, data: Ptr) -> c_int {
             }
         }
     }
+    state.chrome.update(
+        state.handle,
+        now,
+        state.art.appearance == WindowAppearance::Safe,
+    );
     match state.art.follow(elapsed) {
         Ok(Frame::Changed) => unsafe { gtk_widget_queue_draw(state.handle) },
         Ok(Frame::Unchanged) => {}
@@ -252,14 +273,14 @@ unsafe extern "C" fn draw(_widget: Ptr, canvas: Ptr, data: Ptr) -> c_int {
         let layout = state.art.canvas();
         let (width, height) = view.size;
         let scale = view.scale;
-        let (shade, alpha) = match state.art.appearance {
-            WindowAppearance::Safe => (0., 1.0),
-            WindowAppearance::Framed => (0.04, 0.14),
-            WindowAppearance::Clear => (0., 0.),
+        let ([red, green, blue], alpha) = match state.art.appearance {
+            WindowAppearance::Safe => (BACKDROP_RGB.map(|v| f64::from(v) / 255.), 1.0),
+            WindowAppearance::Framed => ([0.04; 3], 0.14),
+            WindowAppearance::Clear => ([0.; 3], 0.),
         };
         cairo_save(canvas);
         cairo_set_operator(canvas, SOURCE);
-        cairo_set_source_rgba(canvas, shade, shade, shade, alpha);
+        cairo_set_source_rgba(canvas, red, green, blue, alpha);
         cairo_paint(canvas);
         if scale > 0.0 {
             let image = cairo_image_surface_create_for_data(
