@@ -14,7 +14,7 @@ import time
 import zipfile
 from pathlib import Path
 
-VERSION = "0.0.2"
+VERSION = "0.0.3"
 TURN_SECONDS = 45
 HOSTS = {
     ("Linux", "x86_64"): ("linux", "x64"),
@@ -24,9 +24,9 @@ HOSTS = {
     ("Windows", "AMD64"): ("windows", "x64"),
     ("Windows", "ARM64"): ("windows", "arm64"),
 }
-MOTION_DIGESTS = {
-    "shape.ghs": "e44b22610dd3a02024181fd1b856cc1e33c15f13821e72ddda5d24784dffa6ff",
-    "tone.ght": "52e71a2731a14902ba2bb8db25d141f4f619aa6b7b584eb2be1e47c9550f46e0",
+BASELINE_DIGESTS = {
+    "shape.ghs": "c76e1e477d118543f75eed4b63903464acbc6bd1bcf5363d300072afbaedaa19",
+    "tone.ght": "14366562c8221b5f048c2d692ec555fff09a64f6e805241c4965fd48f4b5364a",
 }
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
@@ -54,12 +54,12 @@ def validate_executable(executable, artwork, target):
     data = executable.read_bytes()
     if executable_target(data) != target:
         raise ValueError("executable platform or architecture does not match the packaging host")
-    for filename, expected in MOTION_DIGESTS.items():
+    for filename, expected in BASELINE_DIGESTS.items():
         payload = (artwork / filename).read_bytes()
         if hashlib.sha256(payload).hexdigest() != expected:
             raise ValueError(f"{filename} is not the reviewed final artwork")
-        if payload not in data:
-            raise ValueError(f"{filename} is not embedded in this executable")
+        if data.count(payload) != 1:
+            raise ValueError(f"{filename} must occur exactly once inside the executable")
     return hashlib.sha256(data).hexdigest()
 
 
@@ -74,8 +74,8 @@ def local_smoke(executable, *, launch_window=True):
         [str(executable), "--help"], check=True, capture_output=True,
         text=True, timeout=10,
     ).stdout
-    if "Desktop: reviewed W5 native artwork." not in help_text:
-        raise ValueError("expected the final-art-only build, not the W4 review/terminal build")
+    if "Desktop: original 288-pose grayscale artwork." not in help_text:
+        raise ValueError("expected the exact grayscale baseline build, not a review, W5 or terminal build")
     if not launch_window:
         return
     # Do not treat version output or metadata alone as a runnable app.

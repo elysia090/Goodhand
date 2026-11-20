@@ -1,0 +1,3 @@
+# Keep historical offline artwork out of tag source ZIPs and tarballs.
+/reference/source-study/pixels.npz export-ignore
+/reference/visual-baseline/pixels.npz export-ignore

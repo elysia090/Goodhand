@@ -46,7 +46,7 @@ class LocalSmoke(unittest.TestCase):
     def test_current_default_runs_one_45_second_turn(self):
         results = [
             argparse.Namespace(stdout=f"oops {VERSION}\n"),
-            argparse.Namespace(stdout="Desktop: reviewed W5 native artwork."),
+            argparse.Namespace(stdout="Desktop: original 288-pose grayscale artwork."),
             argparse.Namespace(stdout=""),
         ]
         with patch("package.subprocess.run", side_effect=results) as run:
@@ -57,13 +57,23 @@ class LocalSmoke(unittest.TestCase):
     def test_previous_duration_is_rejected_even_with_current_version(self):
         results = [
             argparse.Namespace(stdout=f"oops {VERSION}\n"),
-            argparse.Namespace(stdout="Desktop: reviewed W5 native artwork."),
+            argparse.Namespace(stdout="Desktop: original 288-pose grayscale artwork."),
             argparse.Namespace(stdout=""),
         ]
         with patch("package.subprocess.run", side_effect=results):
             with patch("package.time.monotonic", side_effect=[10, 40]):
                 with self.assertRaisesRegex(ValueError, "45-second"):
                     local_smoke(Path("oops"))
+
+
+    def test_old_artwork_build_is_rejected_even_with_current_version(self):
+        results = [
+            argparse.Namespace(stdout=f"oops {VERSION}\n"),
+            argparse.Namespace(stdout="Desktop: reviewed W5 native artwork."),
+        ]
+        with patch("package.subprocess.run", side_effect=results):
+            with self.assertRaisesRegex(ValueError, "exact grayscale baseline"):
+                local_smoke(Path("oops"), launch_window=False)
 
 
 class LinuxArchive(unittest.TestCase):

@@ -3,7 +3,12 @@
     windows_subsystem = "windows"
 )]
 
-#[cfg(any(test, goodhand_embedded_playback, goodhand_release_artwork))]
+#[cfg(any(
+    test,
+    goodhand_embedded_playback,
+    goodhand_release_artwork,
+    goodhand_baseline_artwork
+))]
 mod archive_profile;
 #[cfg(any(test, goodhand_embedded_playback))]
 mod archived_scene;
@@ -202,7 +207,12 @@ fn main() -> ExitCode {
                 "Desktop: reviewed W5 native artwork. Terminal preview: {}.",
                 arm_scene::CONTENT_LABEL
             );
-            #[cfg(not(goodhand_release_artwork))]
+            #[cfg(goodhand_baseline_artwork)]
+            println!(
+                "Desktop: original 288-pose grayscale artwork. Terminal preview: {}.",
+                arm_scene::CONTENT_LABEL
+            );
+            #[cfg(not(any(goodhand_release_artwork, goodhand_baseline_artwork)))]
             println!("This build plays {}.", arm_scene::CONTENT_LABEL);
             ExitCode::SUCCESS
         }

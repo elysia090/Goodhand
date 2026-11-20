@@ -1,0 +1,3 @@
+The archived 288-phase grayscale artwork is included only for playback
+in this distribution of oops. The MIT license covers the software, not
+the embedded artwork. This notice grants no separate artwork license.

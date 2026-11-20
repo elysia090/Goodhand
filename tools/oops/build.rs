@@ -12,6 +12,10 @@ const TONE_PROFILE: &str = "GOODHAND_TONE_PROFILE";
 const NATIVE_MOTION_DIR: &str = "GOODHAND_NATIVE_MOTION_DIR";
 // Distribution inputs must already be cleared for extraction from the binary.
 const RELEASE_ARTWORK_DIR: &str = "GOODHAND_RELEASE_ARTWORK_DIR";
+// A separate reviewed baseline build is not a release or review-seed build.
+const BASELINE_ARTWORK_DIR: &str = "GOODHAND_BASELINE_ARTWORK_DIR";
+const BASELINE_SHAPE: &str = "c76e1e477d118543f75eed4b63903464acbc6bd1bcf5363d300072afbaedaa19";
+const BASELINE_TONE: &str = "14366562c8221b5f048c2d692ec555fff09a64f6e805241c4965fd48f4b5364a";
 
 // Only the approved motion pair is compatible with the reviewed W5 build.
 // Verify the retained bytes before embedding either private input.
@@ -102,6 +106,19 @@ fn embed_motion(source: &Path, setting: &str, output: &Path) -> io::Result<()> {
     Ok(())
 }
 
+fn embed_baseline(source: &Path, output: &Path) -> io::Result<()> {
+    let shape = input(source, BASELINE_ARTWORK_DIR, "shape.ghs")?;
+    let tone = input(source, BASELINE_ARTWORK_DIR, "tone.ght")?;
+    archive_profile::validate(&shape, &tone)?;
+    let label = "the native baseline requires the exact archived artwork";
+    check_digest(&shape, BASELINE_SHAPE, label, "shape.ghs")?;
+    check_digest(&tone, BASELINE_TONE, label, "tone.ght")?;
+    fs::write(output.join("baseline-shape.ghs"), shape)?;
+    fs::write(output.join("baseline-tone.ght"), tone)?;
+    println!("cargo:rustc-cfg=goodhand_baseline_artwork");
+    Ok(())
+}
+
 fn native_desktop(target_os: &str, output: &Path) -> io::Result<()> {
     println!("cargo:rustc-cfg=goodhand_desktop_artwork");
     let arch = env::var("CARGO_CFG_TARGET_ARCH")
@@ -177,8 +194,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(goodhand_native_motion)");
     println!("cargo:rustc-check-cfg=cfg(goodhand_desktop_artwork)");
     println!("cargo:rustc-check-cfg=cfg(goodhand_release_artwork)");
+    println!("cargo:rustc-check-cfg=cfg(goodhand_baseline_artwork)");
     println!("cargo:rerun-if-env-changed={NATIVE_MOTION_DIR}");
     println!("cargo:rerun-if-env-changed={RELEASE_ARTWORK_DIR}");
+    println!("cargo:rerun-if-env-changed={BASELINE_ARTWORK_DIR}");
     println!("cargo:rerun-if-env-changed={TONE_PROFILE}");
     println!("cargo:rerun-if-env-changed={PLAYBACK_DIR}");
     println!("cargo:rerun-if-changed=build.rs");
@@ -193,6 +212,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let desktop = env::var_os("CARGO_FEATURE_DESKTOP_WINDOW").is_some()
         && matches!(target_os.as_str(), "linux" | "macos" | "windows");
     let output = PathBuf::from(env::var_os("OUT_DIR").ok_or("Cargo did not provide OUT_DIR")?);
+    if let Some(baseline) = env::var_os(BASELINE_ARTWORK_DIR) {
+        if !desktop
+            || env::var_os(PLAYBACK_DIR).is_some()
+            || env::var_os(TONE_PROFILE).is_some()
+            || native_motion.is_some()
+            || env::var_os(RELEASE_ARTWORK_DIR).is_some()
+        {
+            return Err(format!(
+                "{BASELINE_ARTWORK_DIR} requires desktop-window and cannot be mixed with other artwork inputs"
+            )
+            .into());
+        }
+        embed_baseline(Path::new(&baseline), &output)?;
+        native_desktop(&target_os, &output)?;
+        return Ok(());
+    }
     if let Some(release) = env::var_os(RELEASE_ARTWORK_DIR) {
         if !desktop || env::var_os(PLAYBACK_DIR).is_some() || w5 || native_motion.is_some() {
             return Err(format!(
