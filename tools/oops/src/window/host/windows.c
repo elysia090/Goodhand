@@ -377,7 +377,7 @@ int32_t goodhand_run_platform(void *context, uint32_t width, uint32_t height,
     WNDCLASSW mask_cls = {0};
     RECT outer;
     DPI_AWARENESS_CONTEXT previous_dpi;
-    HINSTANCE instance;
+    HINSTANCE instance = NULL;
     HWND window = NULL;
     ATOM registered = 0;
     ATOM mask_registered = 0;
