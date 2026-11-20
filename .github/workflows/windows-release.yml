@@ -27,10 +27,13 @@ jobs:
     env:
       TOOLCHAIN: "1.100.0-x86_64-pc-windows-msvc"
       CARGO_TERM_COLOR: always
-      GOODHAND_BUILD_DIR: ${{ runner.temp }}/goodhand-windows-build
-      GOODHAND_INPUT_DIR: ${{ runner.temp }}/goodhand-windows-input
-      GOODHAND_PACKAGE_DIR: ${{ runner.temp }}/goodhand-windows-package
     steps:
+      - name: Set release paths on the runner
+        shell: pwsh
+        run: |
+          "GOODHAND_BUILD_DIR=$env:RUNNER_TEMP/goodhand-windows-build" >> $env:GITHUB_ENV
+          "GOODHAND_INPUT_DIR=$env:RUNNER_TEMP/goodhand-windows-input" >> $env:GITHUB_ENV
+          "GOODHAND_PACKAGE_DIR=$env:RUNNER_TEMP/goodhand-windows-package" >> $env:GITHUB_ENV
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
