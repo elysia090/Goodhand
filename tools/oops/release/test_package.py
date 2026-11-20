@@ -1,3 +1,4 @@
+import hashlib
 import os
 import struct
 import tarfile
@@ -5,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from extract_linux_artwork import extract_input
 from package import executable_target, linux_archive
 
 
@@ -62,3 +64,16 @@ class LinuxArchive(unittest.TestCase):
                 self.assertEqual(notice.mode, 0o644)
                 self.assertEqual((notice.uname, notice.gname), ("", ""))
                 self.assertEqual(archive.extractfile(notice).read(), b"license")
+
+
+class EmbeddedInput(unittest.TestCase):
+    def test_extractor_requires_exact_unique_bytes(self):
+        magic = b"GHSH"
+        offsets = bytes(540 * 4) + struct.pack("<I", 5)
+        raw = struct.pack("<4sHHHHI", magic, 1, 200, 120, 18, 540) + offsets + b"shape"
+        approved = hashlib.sha256(raw).hexdigest()
+        self.assertEqual(extract_input(b"noise" + raw + b"tail", magic, approved), raw)
+        with self.assertRaisesRegex(ValueError, "missing"):
+            extract_input(raw[:-1] + b"!", magic, approved)
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            extract_input(raw + raw, magic, approved)

@@ -63,6 +63,23 @@ cargo +1.100.0 build --manifest-path tools/oops/Cargo.toml --locked --offline --
 The synthetic desktop CI workflow never ingests private assets or
 publishes binaries. Passing it is only a build gate.
 
+## Windows x64 release build in Actions
+
+For v0.0.1, put the approved Linux x64 binary archive on the
+`v0.0.1` draft release; do not upload the extracted art. Manually run
+**Windows x64 release build** on `main` with numeric IDs for the draft
+and its Linux asset. The job's read-only token must be able to read that
+draft. If it cannot, stop rather than making the draft public or adding
+a long-lived credential.
+
+The job checks the Linux archive and executable SHA-256, recovers the
+approved final 540 phases within the runner, and builds Windows x64
+with MSVC. Its artifact contains only the Windows ZIP and companion
+checksum, not the intermediate files. CLI and build tests do not
+certify a desktop launch. Download the artifact and test the enclosed
+`oops.exe` before attaching the Windows ZIP to the release. This job
+does not publish or modify the draft.
+
 ## Verify and package
 
 1. Launch the final executable on every OS and CPU you intend to list.

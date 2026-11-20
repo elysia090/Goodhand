@@ -3,6 +3,7 @@
 import argparse
 import gzip
 import hashlib
+import os
 import platform
 import shutil
 import struct
@@ -61,7 +62,7 @@ def validate_executable(executable, artwork, target):
     return hashlib.sha256(data).hexdigest()
 
 
-def local_smoke(executable):
+def local_smoke(executable, *, launch_window=True):
     version = subprocess.run(
         [str(executable), "--version"], check=True, capture_output=True,
         text=True, timeout=10,
@@ -74,6 +75,8 @@ def local_smoke(executable):
     ).stdout
     if "Desktop: reviewed W5 native artwork." not in help_text:
         raise ValueError("expected the final-art-only build, not the W4 review/terminal build")
+    if not launch_window:
+        return
     # Do not treat version output or metadata alone as a runnable app.
     start = time.monotonic()
     subprocess.run([str(executable), "--once"], check=True, timeout=40)
@@ -109,12 +112,16 @@ def main():
                      help="artwork rights notice authorized for inclusion in the archive")
     cli.add_argument("--output", type=Path, required=True,
                      help="new output directory (must not already exist)")
+    cli.add_argument("--ci-cli-only", action="store_true",
+                     help="Windows Actions build artifact; run CLI checks without desktop certification")
     args = cli.parse_args()
 
     host = HOSTS.get((platform.system(), platform.machine()))
     if not host:
         cli.error("this build host is not in the x64/ARM64 native release matrix")
     os_name, cpu = host
+    if args.ci_cli_only and (os_name != "windows" or os.environ.get("GITHUB_ACTIONS") != "true"):
+        cli.error("--ci-cli-only is for the Windows Actions build")
     if os_name == "macos":
         translated = subprocess.run(
             ["sysctl", "-in", "sysctl.proc_translated"],
@@ -145,7 +152,7 @@ def main():
         subprocess.run(["codesign", "--verify", "--strict", str(app)], check=True)
         subprocess.run(["xcrun", "stapler", "validate", str(app)], check=True)
     checksum = validate_executable(executable, args.artwork, host)
-    local_smoke(executable)
+    local_smoke(executable, launch_window=not args.ci_cli_only)
 
     basename = f"oops-v{VERSION}-{os_name}-{cpu}"
     ext = ".tar.gz" if os_name == "linux" else ".zip"
@@ -162,8 +169,8 @@ def main():
         shutil.copyfile(ROOT / "LICENSE", stage / "LICENSE")
         shutil.copyfile(HERE / "README.txt", stage / "README.txt")
         (stage / "ARTWORK-LICENSE.txt").write_bytes(notice)
-        (stage / "EXECUTABLE.sha256").write_text(
-            f"{checksum}  {archive_exe}\n", encoding="ascii",
+        (stage / "EXECUTABLE.sha256").write_bytes(
+            f"{checksum}  {archive_exe}\n".encode("ascii"),
         )
         archive = work / (basename + ext)
         if os_name == "linux":
@@ -180,8 +187,8 @@ def main():
         sha256 = hashlib.sha256(archive.read_bytes()).hexdigest()
         args.output.mkdir()
         shutil.move(archive, args.output / archive.name)
-        (args.output / f"{archive.name}.sha256").write_text(
-            f"{sha256}  {archive.name}\n", encoding="ascii",
+        (args.output / f"{archive.name}.sha256").write_bytes(
+            f"{sha256}  {archive.name}\n".encode("ascii"),
         )
 
 
