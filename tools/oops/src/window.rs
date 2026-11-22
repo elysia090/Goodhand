@@ -1,5 +1,7 @@
 //! The shared native artwork raster, schedule and aperture.
 mod bearing_tone;
+#[cfg(all(target_os = "linux", any(goodhand_baseline_artwork, test)))]
+mod coverage;
 #[cfg(target_os = "linux")]
 mod gtk;
 mod interior_matte;
@@ -32,6 +34,7 @@ const BLACK_HEIGHT: usize = 462;
 const BLACK_BOTTOM: i32 = 8;
 const BLACK_EXTRA_TOP: i32 = 8;
 const BLACK_SHIFT: [i32; 2] = [-32, -8];
+const BASELINE_CLIENT: (c_int, c_int) = (595, 290);
 #[cfg(any(target_os = "linux", test))]
 const MIN_SCALE: f64 = 0.60;
 
@@ -88,6 +91,29 @@ impl Canvas {
     fn minimum(self) -> (c_int, c_int) {
         // At 0.60× even 2×2 source dots retain a nearest-neighbor sample.
         self.sized_by_height((3 * self.height).div_ceil(5))
+    }
+}
+
+struct ClientSizes {
+    initial: (c_int, c_int),
+    minimum: (c_int, c_int),
+}
+
+impl ClientSizes {
+    fn new(canvas: Canvas, baseline_black: bool) -> Self {
+        let (width, height) = canvas.minimum();
+        if baseline_black {
+            // Allow the narrower reviewed client. Placement still fits the
+            // entire aperture, and every 2×2 mark retains a pixel sample.
+            return Self {
+                initial: BASELINE_CLIENT,
+                minimum: (width.min(BASELINE_CLIENT.0), height),
+            };
+        }
+        Self {
+            initial: canvas.compact(),
+            minimum: (width, height),
+        }
     }
 }
 
@@ -216,6 +242,13 @@ impl Artwork {
 
     fn canvas(&self) -> Canvas {
         self.apertures.for_appearance(self.appearance)
+    }
+
+    fn client_sizes(&self) -> ClientSizes {
+        ClientSizes::new(
+            self.canvas(),
+            cfg!(goodhand_baseline_artwork) && self.appearance == WindowAppearance::Safe,
+        )
     }
 
     fn follow(&mut self, elapsed: Duration) -> io::Result<Frame> {
@@ -559,7 +592,13 @@ mod tests {
             artwork.renderer.occupied_bounds().unwrap(),
             ([47, 137], [954, 549])
         );
-        assert_eq!(artwork.canvas().compact(), (663, 290));
+        let sizes = artwork.client_sizes();
+        assert_eq!(sizes.initial, (595, 290));
+        assert_eq!(sizes.minimum, (595, 267));
+        artwork.appearance = WindowAppearance::Clear;
+        assert_eq!(artwork.client_sizes().initial, (728, 364));
+        assert_eq!(artwork.client_sizes().minimum, (672, 336));
+        artwork.appearance = WindowAppearance::Safe;
         let mut known = HashSet::new();
         for pose in 0..POSES {
             let time = Duration::from_nanos(u64::from(pose) * 156_250_000);
@@ -656,6 +695,33 @@ mod tests {
         assert_eq!((w, h), (663, 290));
         assert_eq!(Placement::new(black, w, h).scale, 290.0 / 445.0);
         assert!(Placement::new(black, min_width, min_height).scale >= MIN_SCALE);
+    }
+
+    #[test]
+    fn baseline_client_fit_keeps_each_mark_at_the_minimum_and_on_open() {
+        let apertures = Apertures::new(([47, 137], [954, 549])).unwrap();
+        let canvas = apertures.black;
+        let sizes = ClientSizes::new(canvas, true);
+        assert_eq!(sizes.initial, (595, 290));
+        assert_eq!(sizes.minimum, (595, 267));
+        for (width, height) in [sizes.initial, sizes.minimum] {
+            let placement = Placement::new(canvas, width, height);
+            assert_eq!(placement.size, (593, 260));
+            assert!(placement.origin.0 >= 0 && placement.origin.1 >= 0);
+            let spec = RasterSpec::REFERENCE;
+            let start = placement.raster_origin(canvas);
+            for (axis, origin, count) in [(0, start.0, 200), (1, start.1, 120)] {
+                for point in 0..count {
+                    let source = spec.origin[axis] + point * spec.pitch[axis];
+                    let leading = origin + source as f64 * placement.scale;
+                    let trailing = leading + spec.dot_size[axis] as f64 * placement.scale;
+                    assert!((leading - 0.5).ceil() + 0.5 < trailing);
+                }
+            }
+        }
+        let unchanged = ClientSizes::new(canvas, false);
+        assert_eq!(unchanged.initial, (663, 290));
+        assert_eq!(unchanged.minimum, (610, 267));
     }
 
     #[test]

@@ -40,8 +40,9 @@ pub(crate) fn run(repeat: Repeat, appearance: WindowAppearance, cycle: Cycle) ->
     let mut art = Artwork::new(repeat, appearance, cycle)?;
     art.update(0)?;
     let canvas = art.canvas();
-    let (client_width, client_height) = canvas.compact();
-    let (min_width, min_height) = canvas.minimum();
+    let sizes = art.client_sizes();
+    let (client_width, client_height) = sizes.initial;
+    let (min_width, min_height) = sizes.minimum;
     let mut presenter = Presenter {
         pixels: vec![0; canvas.width * canvas.height].into_boxed_slice(),
         art,

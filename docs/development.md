@@ -6,11 +6,13 @@ for comparison. The [source study](../reference/source-study/) preserves the
 earlier authored gray and the independent occupancy shared by both snapshots.
 They are offline references, not runtime inputs. Source imagery is not included.
 
-The packaged player uses embedded fixed-grid artwork. The reviewed W5
-desktop build plays its 30-second turn at 18 distinct artwork phases per
-second. The source-only developer build instead renders the generative model.
-Neither reads the offline reference files at runtime. See the
-[design and quality gates](../DESIGN.md) and the [tone input contract](tone.md).
+The v0.0.4 package embeds the original 288-pose grayscale artwork and
+runs a 45-second turn by default. The source-only developer build
+renders a separate generative terminal preview. Neither reads the
+offline reference files at runtime. See
+[player development](playback-development.md), the
+[historical W5 experiment](historical-w5.md),
+[design and quality gates](../DESIGN.md), and the [tone input contract](tone.md).
 
 ## Library
 

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Exact source commit SHA to build for v0.0.3
+        description: Exact source commit SHA to build for v0.0.4
         type: string
         required: true
       artwork_scope_confirmed:
@@ -17,14 +17,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-release-v0.0.3
+  group: windows-release-v0.0.4
   cancel-in-progress: false
 
 jobs:
   build:
     if: >-
       github.repository == 'elysia090/Goodhand' && inputs.artwork_scope_confirmed &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release/oops-v0.0.3')
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release/oops-v0.0.4')
     runs-on: windows-2025
     timeout-minutes: 20
     env:
@@ -135,9 +135,9 @@ jobs:
       - name: Upload only the Windows archive and checksum
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: oops-v0.0.3-windows-x64
+          name: oops-v0.0.4-windows-x64
           path: |
-            ${{ env.GOODHAND_PACKAGE_DIR }}/oops-v0.0.3-windows-x64.zip
-            ${{ env.GOODHAND_PACKAGE_DIR }}/oops-v0.0.3-windows-x64.zip.sha256
+            ${{ env.GOODHAND_PACKAGE_DIR }}/oops-v0.0.4-windows-x64.zip
+            ${{ env.GOODHAND_PACKAGE_DIR }}/oops-v0.0.4-windows-x64.zip.sha256
           if-no-files-found: error
           retention-days: 3
