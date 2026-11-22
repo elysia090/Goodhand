@@ -699,9 +699,10 @@ def test_standard_sizes(binary, framing):
 
 
 def tests(binary, *, full, strict):
+    version = None
     for args, code, out in [
-        (["--help"], 0, b"Usage: oops"),
         (["--version"], 0, b"oops 0.0.4"),
+        (["--help"], 0, b"Usage: oops"),
         (["--bad-argument"], 2, b"unknown option"),
         (["--terminal"], 2, b"not a terminal"),
         (["--terminal", "--alternate-buffer"], 2, b"not a terminal"),
@@ -720,6 +721,10 @@ def tests(binary, *, full, strict):
         plain = result.stdout + result.stderr
         assert out in plain
         assert b"\x1b" not in plain
+        if args == ["--version"]:
+            version = result.stdout.strip()
+        elif args == ["--help"]:
+            assert result.stdout.splitlines()[0] == version
         if code:
             assert not result.stdout
     print("PASS plain help, version, args and redirected stdout")

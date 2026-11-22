@@ -60,6 +60,15 @@ cargo +1.100.0 build --manifest-path tools/oops/Cargo.toml --locked --offline --
 Synthetic desktop CI never ingests private inputs or publishes
 binaries. Passing it is a build gate, not desktop verification.
 
+## Build provenance
+
+Build both packages from the same final source commit. Record
+`git rev-parse HEAD`, the executable SHA-256, and the archive SHA-256
+for each target. If code changes after a package was built, rebuild and
+reverify both targets; a matching version label does not prove the
+package contains the current source. Do not attach staging artifacts
+from a superseded commit.
+
 ## Windows x64 release build in Actions
 
 Manually run **Windows x64 release build** on `release/oops-v0.0.4` or

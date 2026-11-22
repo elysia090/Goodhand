@@ -43,9 +43,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const HELP: &str = "oops 0.0.1
-
-Open an independent Goodhand window (desktop build).
+const VERSION: &str = concat!("oops ", env!("CARGO_PKG_VERSION"));
+const HELP: &str = "Open an independent Goodhand window (desktop build).
 The window loops in 45 seconds; press q or Esc to close.
 
 Usage: oops [--window | --island] [--config PATH] [--once] [TURN OPTIONS]
@@ -201,7 +200,7 @@ fn main() -> ExitCode {
     };
     match options.mode {
         Mode::Help => {
-            print!("{HELP}");
+            print!("{VERSION}\n\n{HELP}");
             #[cfg(goodhand_release_artwork)]
             println!(
                 "Desktop: reviewed W5 native artwork. Terminal preview: {}.",
@@ -218,7 +217,7 @@ fn main() -> ExitCode {
         }
         Mode::Play | Mode::Window => run_window(options),
         Mode::Version => {
-            println!("oops {}", env!("CARGO_PKG_VERSION"));
+            println!("{VERSION}");
             ExitCode::SUCCESS
         }
         _ => run(options),
@@ -328,6 +327,29 @@ mod tests {
                 .seconds(),
             30
         );
+    }
+
+    #[cfg(any(
+        goodhand_desktop_artwork,
+        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+    ))]
+    #[test]
+    fn example_config_preserves_each_modes_defaults() {
+        let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("oops.example.conf");
+        for mode in [&[][..], &["--window"], &["--island"], &["--terminal"]] {
+            let options = args(mode).unwrap();
+            let defaults = args(mode).unwrap().settings().unwrap();
+            assert_eq!(
+                Options {
+                    config: Some(sample.clone()),
+                    ..options
+                }
+                .settings()
+                .unwrap(),
+                defaults,
+                "{mode:?}"
+            );
+        }
     }
 
     #[test]
