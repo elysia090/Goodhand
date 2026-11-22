@@ -701,7 +701,7 @@ def test_standard_sizes(binary, framing):
 def tests(binary, *, full, strict):
     for args, code, out in [
         (["--help"], 0, b"Usage: oops"),
-        (["--version"], 0, b"oops 0.0.3"),
+        (["--version"], 0, b"oops 0.0.4"),
         (["--bad-argument"], 2, b"unknown option"),
         (["--terminal"], 2, b"not a terminal"),
         (["--terminal", "--alternate-buffer"], 2, b"not a terminal"),

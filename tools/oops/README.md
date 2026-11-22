@@ -1,4 +1,4 @@
-# oops 0.0.3 · playback
+# oops 0.0.4 · playback
 
 ### Island: an independent desktop window
 
@@ -10,9 +10,9 @@ playback does not write to the shell. The window uses the desktop's
 standard title bar, border, buttons and resize handles. Linux needs
 GTK3/GDK and Cairo. Windows and macOS use their system frameworks.
 
-For the reviewed artwork, the default client is 663×290, close to an
-80×24 terminal's visual footprint with the native frame on. The original
-1016×445 aperture is still used for composition, fitted without clipping
+For the reviewed artwork, the default client is 595×290 (about 2.05:1),
+excluding native decorations. The desktop can still tile or resize it.
+The original 1016×445 aperture is still used for composition, fitted without clipping
 or stretching. The opaque pane is cool near-black (`#0C1012`); the arm
 uses the unmodified archived grayscale and independent occupancy.
 There is no display-grade curve, backing matte, bearing-tone change
@@ -40,6 +40,16 @@ On a composited Linux desktop, press t to cycle appearances, or set
 On Linux, `safe` is opaque near-black, `clear` is transparent, and
 `framed` adds a lightly translucent neutral background. The native
 frame is the same in all three modes.
+
+In the Linux archived-artwork build, the opaque pane samples fractional
+fits by the portion of each device pixel covered by a dot. This avoids
+alternating thin and thick rows or columns without moving the aperture
+or changing the stored tones. Whole-pixel fits use the existing Cairo
+draw; transparent modes, nonmatching device transforms and unusually
+large buffers also keep that path. Win32, AppKit and terminal rendering
+are unchanged. A photographed or externally scaled display can still
+show moiré.
+
 `--config`, `--once`, `--duration` and `--direction` apply to Island.
 Terminal framing flags do not.
 
@@ -98,7 +108,7 @@ terminal playback needs external video, Python, or FFmpeg once built.
   30 seconds. On the original 24 Hz timeline, each archived pose starts at the
   nearest tick to its equally spaced time (ties round up), so every
   pose has at least one scheduled tick. A slow terminal may still miss
-  submissions. The v0.0.3 baseline window plays all 288 original
+  submissions. The v0.0.4 baseline window plays all 288 original
   positions at each supported duration. The procedural terminal
   developer scene samples the corresponding yaw on each tick.
 - `--direction reverse` (the default) follows the reviewed order.

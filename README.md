@@ -1,10 +1,10 @@
 # Goodhand
 
-**oops** is a rotating hand in its own window. The v0.0.3 source plays
+**oops** is a rotating hand in its own window. The v0.0.4 source plays
 the original 288-pose grayscale artwork on the cool near-black pane,
 without later arm corrections. One turn takes 45 seconds by default.
 
-[![Source version: v0.0.3](https://img.shields.io/badge/source-v0.0.3-lightgrey?style=flat)](https://github.com/elysia090/Goodhand/releases)
+[![Source version: v0.0.4](https://img.shields.io/badge/source-v0.0.4-lightgrey?style=flat)](https://github.com/elysia090/Goodhand/releases)
 [![Playback: 45 s per turn](https://img.shields.io/badge/playback-45%20s%20per%20turn-blue?style=flat)](#open-oops)
 [![Chip targets: x64 and ARM64](https://img.shields.io/badge/targets-x64%20%7C%20ARM64-informational?style=flat)](#downloads)
 [![Software license: MIT](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
@@ -18,7 +18,7 @@ the project.
 
 | Desktop | Chip | Verification | Download |
 | --- | --- | --- | --- |
-| Linux | `x64` · Intel / AMD | Reviewed artwork ran on native Xfce | See Releases |
+| Linux | `x64` · Intel / AMD | Exact-artwork Cairo renderer tests; see release notes | See Releases |
 | Linux | `ARM64` · 64-bit Arm | Synthetic CI only | Pending native check |
 | Windows | `x64` · Intel / AMD | Build and CLI checks; interactive behavior not verified | See Releases |
 | Windows | `ARM64` · 64-bit Arm | Synthetic CI only | Pending native check |
@@ -42,11 +42,15 @@ for native verification and signing.
 
 To play one 45-second turn and exit, run `./oops --once` on Linux or
 `.\oops.exe --once` in PowerShell on Windows. Use `--duration 22` for
-a faster turn. The v0.0.3 build schedules its 288 original poses
+a faster turn. The v0.0.4 build schedules its 288 original poses
 at 6.4 per second by default; v0.0.2 uses a different 540-pose archive.
 
 The app does not need a terminal to play, a video player, or a network
 connection. A busy desktop compositor can skip displayed frames.
+
+The exact-artwork native client defaults to 595×290 before the desktop
+places it. Linux evens dot coverage at fractional sizes; this release
+does not change the Windows renderer's scaling.
 
 ## Develop
 

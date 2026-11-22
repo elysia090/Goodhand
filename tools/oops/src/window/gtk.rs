@@ -5,7 +5,9 @@ mod chrome_x11;
 mod sys;
 
 use self::sys::*;
-use super::{Artwork, BACKDROP_RGB, Frame, HEIGHT, MIN_SCALE, Placement, WIDTH};
+#[cfg(goodhand_baseline_artwork)]
+use super::coverage;
+use super::{Artwork, BACKDROP_RGB, Canvas, Frame, HEIGHT, MIN_SCALE, Placement, WIDTH};
 use crate::playback::{Cycle, Repeat};
 use crate::settings::WindowAppearance;
 use std::ffi::{c_int, c_uint};
@@ -18,6 +20,8 @@ type Signal = unsafe extern "C" fn(Ptr, Ptr, Ptr) -> c_int;
 struct Window {
     handle: Ptr,
     art: Artwork,
+    #[cfg(goodhand_baseline_artwork)]
+    area: coverage::Raster,
     time: Option<Instant>,
     once_timeout: Option<c_uint>,
     initial_size: Option<(c_int, c_int)>,
@@ -36,6 +40,8 @@ impl Window {
         Ok(Self {
             handle,
             art: Artwork::new(repeat, appearance, cycle)?,
+            #[cfg(goodhand_baseline_artwork)]
+            area: coverage::Raster::default(),
             time: None,
             once_timeout: None,
             initial_size: None,
@@ -59,7 +65,7 @@ impl Window {
         }
         let canvas = self.art.canvas();
         if previous != canvas {
-            let (min_width, min_height) = canvas.minimum();
+            let (min_width, min_height) = self.art.client_sizes().minimum;
             unsafe {
                 gtk_widget_set_size_request(self.handle, min_width, min_height);
                 // Preserve artwork scale when switching a floating panel.
@@ -123,10 +129,10 @@ pub(crate) fn run(repeat: Repeat, appearance: WindowAppearance, cycle: Cycle) ->
             };
         gtk_window_set_title(handle, c"oops".as_ptr());
         gtk_widget_set_app_paintable(handle, 1);
-        let canvas = state.art.canvas();
-        let (min_width, min_height) = canvas.minimum();
+        let sizes = state.art.client_sizes();
+        let (min_width, min_height) = sizes.minimum;
         gtk_widget_set_size_request(handle, min_width, min_height);
-        let (width, height) = canvas.compact();
+        let (width, height) = sizes.initial;
         gtk_window_set_default_size(handle, width, height);
         state.initial_size = Some((width, height));
         state.translucent = translucent;
@@ -264,15 +270,125 @@ unsafe extern "C" fn tick(_widget: Ptr, _clock: Ptr, data: Ptr) -> c_int {
     1
 }
 
+#[cfg(goodhand_baseline_artwork)]
+unsafe fn device_scale(canvas: Ptr) -> Option<i32> {
+    // GTK gives the draw signal logical widget coordinates. Sample on the
+    // actual Cairo target's device grid, not monitor DPI or the window size.
+    let mut matrix = CairoMatrix::default();
+    let (mut sx, mut sy, mut x0, mut y0) = (0., 0., 0., 0.);
+    unsafe {
+        let target = cairo_get_group_target(canvas);
+        const RECORDING: c_int = 16;
+        if cairo_surface_get_type(target) == RECORDING {
+            // Recording can retain the borrowed image beyond this draw.
+            return None;
+        }
+        cairo_get_matrix(canvas, &mut matrix);
+        cairo_surface_get_device_scale(target, &mut sx, &mut sy);
+        cairo_surface_get_device_offset(target, &mut x0, &mut y0);
+    }
+    let on_pixel = |v: f64| (v - v.round()).abs() < 1e-9;
+    if matrix.xx == 1.
+        && matrix.yy == 1.
+        && matrix.xy == 0.
+        && matrix.yx == 0.
+        && sx == sy
+        && (1. ..=8.).contains(&sx)
+        && sx.fract() == 0.
+        && on_pixel(matrix.x0 * sx + x0)
+        && on_pixel(matrix.y0 * sy + y0)
+    {
+        Some(sx as i32)
+    } else {
+        // Mirroring, unusual device transforms, or a non-pixel-aligned
+        // target must not sample the scratch image a second time.
+        None
+    }
+}
+
+#[cfg(goodhand_baseline_artwork)]
+unsafe fn paint_area(canvas: Ptr, view: Placement, device: i32, area: coverage::Frame<'_>) -> bool {
+    // The caller-owned bytes outlive this image and its Cairo source pattern.
+    unsafe {
+        let image = cairo_image_surface_create_for_data(
+            area.pixels.as_mut_ptr().cast(),
+            ARGB32,
+            area.width,
+            area.height,
+            4 * area.width,
+        );
+        let ok = cairo_surface_status(image) == 0;
+        if ok {
+            cairo_surface_set_device_scale(image, f64::from(device), f64::from(device));
+            let (x, y) = (view.origin.0.into(), view.origin.1.into());
+            cairo_save(canvas);
+            cairo_set_operator(canvas, OVER);
+            cairo_set_source_surface(canvas, image, x, y);
+            cairo_pattern_set_filter(cairo_get_source(canvas), NEAREST);
+            cairo_rectangle(canvas, x, y, view.size.0.into(), view.size.1.into());
+            cairo_fill(canvas);
+            cairo_restore(canvas);
+        }
+        cairo_surface_destroy(image);
+        ok
+    }
+}
+
+unsafe fn paint_nearest(canvas: Ptr, layout: Canvas, view: Placement, pixels: &mut [u32]) -> bool {
+    // Fill and restore before releasing the image borrowed from the raster.
+    unsafe {
+        let image = cairo_image_surface_create_for_data(
+            pixels.as_mut_ptr().cast(),
+            ARGB32,
+            WIDTH as c_int,
+            HEIGHT as c_int,
+            (4 * WIDTH) as c_int,
+        );
+        let ok = cairo_surface_status(image) == 0;
+        if ok {
+            cairo_save(canvas);
+            cairo_translate(canvas, view.origin.0.into(), view.origin.1.into());
+            cairo_set_operator(canvas, OVER);
+            cairo_rectangle(canvas, 0., 0., view.size.0.into(), view.size.1.into());
+            cairo_clip(canvas);
+            let (x, y) = view.raster_origin(layout);
+            cairo_translate(canvas, x, y);
+            cairo_scale(canvas, view.scale, view.scale);
+            cairo_set_source_surface(canvas, image, 0., 0.);
+            cairo_pattern_set_filter(cairo_get_source(canvas), NEAREST);
+            cairo_rectangle(canvas, 0., 0., WIDTH as f64, HEIGHT as f64);
+            cairo_fill(canvas);
+            cairo_restore(canvas);
+        }
+        cairo_surface_destroy(image);
+        ok
+    }
+}
+
+#[cfg(goodhand_baseline_artwork)]
+unsafe fn paint_preferred(
+    canvas: Ptr,
+    layout: Canvas,
+    view: Placement,
+    art: &mut Artwork,
+    area: &mut coverage::Raster,
+) -> bool {
+    unsafe {
+        let sampled = art.appearance == WindowAppearance::Safe
+            && device_scale(canvas).is_some_and(|device| {
+                area
+                    .frame(layout, view, device, art.pose, &art.argb)
+                    .is_some_and(|frame| paint_area(canvas, view, device, frame))
+            });
+        sampled || paint_nearest(canvas, layout, view, &mut art.argb)
+    }
+}
+
 unsafe extern "C" fn draw(_widget: Ptr, canvas: Ptr, data: Ptr) -> c_int {
     let state: &mut Window = unsafe { &mut *data.cast::<Window>() };
-    // Borrowed image memory stays valid through paint. Restoring the Cairo
-    // state releases its source pattern before the image and slice can change.
     unsafe {
         let view = state.placement();
         let layout = state.art.canvas();
-        let (width, height) = view.size;
-        let scale = view.scale;
         let ([red, green, blue], alpha) = match state.art.appearance {
             WindowAppearance::Safe => (BACKDROP_RGB.map(|v| f64::from(v) / 255.), 1.0),
             WindowAppearance::Framed => ([0.04; 3], 0.14),
@@ -282,37 +398,184 @@ unsafe extern "C" fn draw(_widget: Ptr, canvas: Ptr, data: Ptr) -> c_int {
         cairo_set_operator(canvas, SOURCE);
         cairo_set_source_rgba(canvas, red, green, blue, alpha);
         cairo_paint(canvas);
-        if scale > 0.0 {
-            let image = cairo_image_surface_create_for_data(
-                state.art.argb.as_mut_ptr().cast(),
-                ARGB32,
-                WIDTH as c_int,
-                HEIGHT as c_int,
-                (4 * WIDTH) as c_int,
-            );
-            if cairo_surface_status(image) == 0 {
-                cairo_translate(canvas, view.origin.0.into(), view.origin.1.into());
-                cairo_set_operator(canvas, OVER);
-                cairo_save(canvas);
-                cairo_rectangle(canvas, 0., 0., width.into(), height.into());
-                cairo_clip(canvas);
-                let (x, y) = view.raster_origin(layout);
-                cairo_translate(canvas, x, y);
-                cairo_scale(canvas, scale, scale);
-                cairo_set_source_surface(canvas, image, 0., 0.);
-                cairo_pattern_set_filter(cairo_get_source(canvas), NEAREST);
-                cairo_rectangle(canvas, 0., 0., WIDTH as f64, HEIGHT as f64);
-                cairo_fill(canvas);
-                cairo_restore(canvas);
-            } else {
-                state.error = Some(io::Error::other(
-                    "Cairo could not create the raster surface",
-                ));
-                gtk_main_quit();
-            }
-            cairo_surface_destroy(image);
+        #[cfg(goodhand_baseline_artwork)]
+        let ok = view.scale <= 0.
+            || paint_preferred(canvas, layout, view, &mut state.art, &mut state.area);
+        #[cfg(not(goodhand_baseline_artwork))]
+        let ok = view.scale <= 0. || paint_nearest(canvas, layout, view, &mut state.art.argb);
+        if !ok {
+            state.error = Some(io::Error::other(
+                "Cairo could not create the raster surface",
+            ));
+            gtk_main_quit();
         }
         cairo_restore(canvas);
     }
     1
+}
+
+#[cfg(all(test, goodhand_baseline_artwork))]
+mod tests {
+    use super::*;
+    use crate::playback::CycleDuration;
+    use std::hint::black_box;
+
+    struct Target {
+        context: Ptr,
+        image: Ptr,
+        pixels: Vec<u32>,
+    }
+
+    impl Target {
+        fn new(w: i32, h: i32, device: i32) -> Self {
+            let (width, height) = (w * device, h * device);
+            let mut pixels = vec![0_u32; (width * height) as usize];
+            // Borrow the buffer until both the context and surface are dropped.
+            unsafe {
+                let image = cairo_image_surface_create_for_data(
+                    pixels.as_mut_ptr().cast(),
+                    ARGB32,
+                    width,
+                    height,
+                    4 * width,
+                );
+                assert_eq!(cairo_surface_status(image), 0);
+                cairo_surface_set_device_scale(image, f64::from(device), f64::from(device));
+                let context = cairo_create(image);
+                assert_eq!(device_scale(context), Some(device));
+                Self {
+                    context,
+                    image,
+                    pixels,
+                }
+            }
+        }
+
+        fn draw(
+            &mut self,
+            layout: Canvas,
+            view: Placement,
+            art: &mut Artwork,
+            area: Option<&mut coverage::Raster>,
+        ) {
+            unsafe {
+                cairo_save(self.context);
+                cairo_set_operator(self.context, SOURCE);
+                let [r, g, b] = BACKDROP_RGB.map(|v| f64::from(v) / 255.);
+                cairo_set_source_rgba(self.context, r, g, b, 1.);
+                cairo_paint(self.context);
+                assert!(match area {
+                    Some(area) => paint_preferred(self.context, layout, view, art, area),
+                    None => paint_nearest(self.context, layout, view, &mut art.argb),
+                });
+                cairo_restore(self.context);
+                cairo_surface_flush(self.image);
+            }
+        }
+    }
+
+    impl Drop for Target {
+        fn drop(&mut self) {
+            unsafe {
+                cairo_destroy(self.context);
+                cairo_surface_destroy(self.image);
+            }
+        }
+    }
+
+    fn baseline() -> Artwork {
+        Artwork::new(
+            Repeat::Loop,
+            WindowAppearance::Safe,
+            Cycle {
+                duration: CycleDuration::WINDOW_DEFAULT,
+                ..Cycle::default()
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn offscreen_cairo_preserves_one_x_and_blits_exact_physical_pixels() {
+        let mut art = baseline();
+        let layout = art.canvas();
+        let mut area = coverage::Raster::default();
+        for pose in [0, 36, 108, 180, 252] {
+            art.update(pose).unwrap();
+            for (w, h, device) in [(1016, 445, 1), (565, 305, 1), (595, 290, 1), (597, 290, 1), (597, 290, 2)] {
+                let view = Placement::new(layout, w, h);
+                let mut nearest = Target::new(w, h, device);
+                nearest.draw(layout, view, &mut art, None);
+                let mut target = Target::new(w, h, device);
+                target.draw(layout, view, &mut art, Some(&mut area));
+                if w == 1016 {
+                    assert_eq!(target.pixels, nearest.pixels);
+                    continue;
+                }
+                assert_ne!(target.pixels, nearest.pixels);
+                let frame = area.frame(layout, view, device, pose, &art.argb).unwrap();
+                let black = super::super::argb(BACKDROP_RGB, true);
+                let (x0, y0) = (view.origin.0 * device, view.origin.1 * device);
+                for row in 0..h * device {
+                    for col in 0..w * device {
+                        let (x, y) = (col - x0, row - y0);
+                        let expected = if (0..frame.width).contains(&x)
+                            && (0..frame.height).contains(&y)
+                        {
+                            frame.pixels[(y * frame.width + x) as usize]
+                        } else {
+                            black
+                        };
+                        assert_eq!(target.pixels[(row * w * device + col) as usize], expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "run explicitly for a release-mode, no-display Cairo comparison"]
+    fn benchmark_cairo_draw() {
+        let mut art = baseline();
+        let layout = art.canvas();
+        for (w, h, device) in [
+            (595, 290, 1),
+            (597, 290, 1),
+            (597, 290, 2),
+            (960, 1040, 1),
+        ] {
+            let view = Placement::new(layout, w, h);
+            let mut a = Target::new(w, h, device);
+            let mut b = Target::new(w, h, device);
+            let mut area = coverage::Raster::default();
+            let mut old = Vec::new();
+            let mut new = Vec::new();
+            for pose in 0..crate::archive_profile::POSES {
+                art.update(pose).unwrap(); // identical work for both paths
+                let before = Instant::now();
+                a.draw(layout, view, &mut art, None);
+                let t_old = before.elapsed();
+                let before = Instant::now();
+                b.draw(layout, view, &mut art, Some(&mut area));
+                let t_new = before.elapsed();
+                black_box(&a.pixels);
+                black_box(&b.pixels);
+                // Exclude the first allocation and palette initialization.
+                if pose > 0 {
+                    old.push(t_old);
+                    new.push(t_new);
+                }
+            }
+            for (what, mut samples) in [("nearest", old), ("area", new)] {
+                samples.sort_unstable();
+                let ms = |p: usize| samples[p].as_secs_f64() * 1000.;
+                eprintln!(
+                    "{w}×{h}@{device} {what}: p50 {:.3} ms, p95 {:.3} ms, max {:.3} ms",
+                    ms(samples.len() / 2),
+                    ms(samples.len() * 95 / 100),
+                    ms(samples.len() - 1),
+                );
+            }
+        }
+    }
 }

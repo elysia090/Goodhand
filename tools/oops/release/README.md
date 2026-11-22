@@ -1,10 +1,12 @@
-# oops 0.0.3 release checklist
+# oops 0.0.4 release checklist
 
 Build and verify Windows x64 and Linux x64 together. macOS stays on
 hold; ARM64 downloads are out of scope. Preserve existing tags and
-packages. The default 663×290 native client plays the exact historical
+packages. The default 595×290 native client plays the exact historical
 288-pose grayscale artwork over 45 seconds on the `#0C1012` pane.
 No later arm correction or interpolation is applied.
+Fractional-size dot coverage changes on Linux only. The Win32 renderer
+and its fractional-scaling behavior are unchanged.
 
 ## Distribution boundary
 
@@ -60,7 +62,7 @@ binaries. Passing it is a build gate, not desktop verification.
 
 ## Windows x64 release build in Actions
 
-Manually run **Windows x64 release build** on `release/oops-v0.0.3` or
+Manually run **Windows x64 release build** on `release/oops-v0.0.4` or
 `main` with the exact source commit SHA. Enable
 `artwork_scope_confirmed` only after distribution approval has been
 recorded. The job reads the pinned archive already in source history,

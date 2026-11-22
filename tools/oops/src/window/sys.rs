@@ -67,6 +67,18 @@ pub(super) const SOURCE: c_int = 1;
 pub(super) const OVER: c_int = 2;
 pub(super) const NEAREST: c_int = 3;
 
+#[cfg(goodhand_baseline_artwork)]
+#[derive(Default)]
+#[repr(C)]
+pub(super) struct CairoMatrix {
+    pub xx: c_double,
+    pub yx: c_double,
+    pub xy: c_double,
+    pub yy: c_double,
+    pub x0: c_double,
+    pub y0: c_double,
+}
+
 #[link(name = "libcairo.so.2", kind = "dylib", modifiers = "+verbatim")]
 unsafe extern "C" {
     pub fn cairo_image_surface_create_for_data(
@@ -77,6 +89,24 @@ unsafe extern "C" {
         stride: c_int,
     ) -> Ptr;
     pub fn cairo_surface_status(surface: Ptr) -> c_int;
+    #[cfg(goodhand_baseline_artwork)]
+    pub fn cairo_get_group_target(context: Ptr) -> Ptr;
+    #[cfg(goodhand_baseline_artwork)]
+    pub fn cairo_surface_get_type(surface: Ptr) -> c_int;
+    #[cfg(goodhand_baseline_artwork)]
+    pub fn cairo_get_matrix(context: Ptr, matrix: *mut CairoMatrix);
+    #[cfg(goodhand_baseline_artwork)]
+    pub fn cairo_surface_get_device_scale(surface: Ptr, x: *mut c_double, y: *mut c_double);
+    #[cfg(goodhand_baseline_artwork)]
+    pub fn cairo_surface_get_device_offset(surface: Ptr, x: *mut c_double, y: *mut c_double);
+    #[cfg(goodhand_baseline_artwork)]
+    pub fn cairo_surface_set_device_scale(surface: Ptr, x: c_double, y: c_double);
+    #[cfg(all(test, goodhand_baseline_artwork))]
+    pub fn cairo_create(surface: Ptr) -> Ptr;
+    #[cfg(all(test, goodhand_baseline_artwork))]
+    pub fn cairo_destroy(context: Ptr);
+    #[cfg(all(test, goodhand_baseline_artwork))]
+    pub fn cairo_surface_flush(surface: Ptr);
     pub fn cairo_save(context: Ptr);
     pub fn cairo_restore(context: Ptr);
     pub fn cairo_set_operator(context: Ptr, operator: c_int);

@@ -14,7 +14,7 @@ import time
 import zipfile
 from pathlib import Path
 
-VERSION = "0.0.3"
+VERSION = "0.0.4"
 TURN_SECONDS = 45
 HOSTS = {
     ("Linux", "x86_64"): ("linux", "x64"),
