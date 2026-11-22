@@ -84,6 +84,23 @@ checks do not establish real Windows hover behavior. Record the
 interactive results separately; distinguish tested and unverified
 environments in release notes.
 
+## Linux x64 release build in Actions
+
+The **Linux x64 release build** workflow is manual and runs from
+`main`. Enter its pinned merged v0.0.4 source SHA
+(`c94183a143558c9bc5fefa2c46db0e613152d008`), which is also the
+Windows package's source. The workflow definition may be on a later
+commit. Enable `artwork_scope_confirmed` only after approval has been
+recorded for this exact embedded pair.
+
+The Ubuntu 22.04 runner checks the 2.35 glibc baseline and the
+executable's symbol versions. The unchanged packager runs the complete
+45-second window smoke test on an authenticated Xvfb display with TCP
+disabled. The workflow records the source commit/tree and both SHA-256
+checksums, and stores only the finished archive and its checksum as a
+short-lived Actions artifact. It neither publishes a release nor
+certifies a physical desktop, presentation timing, or Wayland.
+
 ## Verify and package
 
 1. Launch the final executable on every OS and CPU you intend to list.
