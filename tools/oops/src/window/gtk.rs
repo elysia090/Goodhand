@@ -376,8 +376,7 @@ unsafe fn paint_preferred(
     unsafe {
         let sampled = art.appearance == WindowAppearance::Safe
             && device_scale(canvas).is_some_and(|device| {
-                area
-                    .frame(layout, view, device, art.pose, &art.argb)
+                area.frame(layout, view, device, art.pose, &art.argb)
                     .is_some_and(|frame| paint_area(canvas, view, device, frame))
             });
         sampled || paint_nearest(canvas, layout, view, &mut art.argb)
@@ -502,7 +501,13 @@ mod tests {
         let mut area = coverage::Raster::default();
         for pose in [0, 36, 108, 180, 252] {
             art.update(pose).unwrap();
-            for (w, h, device) in [(1016, 445, 1), (565, 305, 1), (595, 290, 1), (597, 290, 1), (597, 290, 2)] {
+            for (w, h, device) in [
+                (1016, 445, 1),
+                (565, 305, 1),
+                (595, 290, 1),
+                (597, 290, 1),
+                (597, 290, 2),
+            ] {
                 let view = Placement::new(layout, w, h);
                 let mut nearest = Target::new(w, h, device);
                 nearest.draw(layout, view, &mut art, None);
@@ -519,13 +524,12 @@ mod tests {
                 for row in 0..h * device {
                     for col in 0..w * device {
                         let (x, y) = (col - x0, row - y0);
-                        let expected = if (0..frame.width).contains(&x)
-                            && (0..frame.height).contains(&y)
-                        {
-                            frame.pixels[(y * frame.width + x) as usize]
-                        } else {
-                            black
-                        };
+                        let expected =
+                            if (0..frame.width).contains(&x) && (0..frame.height).contains(&y) {
+                                frame.pixels[(y * frame.width + x) as usize]
+                            } else {
+                                black
+                            };
                         assert_eq!(target.pixels[(row * w * device + col) as usize], expected);
                     }
                 }
@@ -538,12 +542,7 @@ mod tests {
     fn benchmark_cairo_draw() {
         let mut art = baseline();
         let layout = art.canvas();
-        for (w, h, device) in [
-            (595, 290, 1),
-            (597, 290, 1),
-            (597, 290, 2),
-            (960, 1040, 1),
-        ] {
+        for (w, h, device) in [(595, 290, 1), (597, 290, 1), (597, 290, 2), (960, 1040, 1)] {
             let view = Placement::new(layout, w, h);
             let mut a = Target::new(w, h, device);
             let mut b = Target::new(w, h, device);

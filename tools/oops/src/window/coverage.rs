@@ -95,7 +95,11 @@ impl Plan {
         }
         let step = 2 * scaled_height;
         let axis = |offset, origin, pitch, dot, index, limit| {
-            Span::clipped(offset + (origin + index * pitch) as i64 * step, dot * step, limit)
+            Span::clipped(
+                offset + (origin + index * pitch) as i64 * step,
+                dot * step,
+                limit,
+            )
         };
         let columns = std::array::from_fn(|i| {
             axis(
@@ -281,7 +285,10 @@ mod tests {
             let p = plan(canvas, w, h, device).unwrap();
             let side = 4 * i64::from(p.key.logical.1) * i64::from(device);
             let check = |span: Span| {
-                assert_eq!(span.pieces(p.den).map(|(_, weight)| weight).sum::<i64>(), side);
+                assert_eq!(
+                    span.pieces(p.den).map(|(_, weight)| weight).sum::<i64>(),
+                    side
+                );
             };
             // x/y indices in the exact full-turn occupied bbox [47,954) × [137,549).
             p.columns[9..=190].iter().copied().for_each(check);
@@ -321,7 +328,10 @@ mod tests {
                 }
                 for (c, actual) in sum.into_iter().enumerate() {
                     let expect = px * (color.gray[usize::from(gray_for(col))] - color.ground[c]);
-                    assert!((actual - expect).abs() < 0.035, "{w}×{h}@{device}, column {col}");
+                    assert!(
+                        (actual - expect).abs() < 0.035,
+                        "{w}×{h}@{device}, column {col}"
+                    );
                 }
             }
         }
@@ -333,7 +343,8 @@ mod tests {
         let a = Placement::new(canvas, 595, 290);
         let b = Placement::new(canvas, 597, 290);
         let mut art = vec![0; WIDTH * super::super::HEIGHT];
-        let dot = (SPEC.origin[1] + 55 * SPEC.pitch[1]) * WIDTH + SPEC.origin[0] + 100 * SPEC.pitch[0];
+        let dot =
+            (SPEC.origin[1] + 55 * SPEC.pitch[1]) * WIDTH + SPEC.origin[0] + 100 * SPEC.pitch[0];
         art[dot] = argb([180; 3], true);
         let mut raster = Raster::default();
         let pixels = raster.frame(canvas, a, 1, 4, &art).unwrap().pixels.to_vec();
